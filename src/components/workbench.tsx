@@ -644,6 +644,10 @@ function MarksSheet({ onClose }: { onClose: () => void }) {
             ×
           </button>
         </div>
+        <div className="mb-4 grid gap-3">
+          <img src="/og.jpg" alt="Link preview" className="w-full border border-line" />
+          <img src="/x-banner.jpg" alt="X banner" className="w-full border border-line" />
+        </div>
         <div className="grid gap-3 sm:grid-cols-3">
           {items.map(([name, line], index) => (
             <figure key={name} className="border border-line bg-well p-4">
