@@ -259,7 +259,7 @@ export function NodeCanvas({
               {node.inputs[0] ?? "start"} → {node.outputs[0]}
             </p>
             {node.childGraphId ? (
-              <p className="mt-2 font-mono text-sm text-bone">Nested agent</p>
+              <p className="mt-2 font-mono text-sm text-bone">Nested workflow</p>
             ) : null}
             <span
               data-resize="true"
@@ -274,9 +274,6 @@ export function NodeCanvas({
           </article>
         ))}
       </div>
-      <p className="pointer-events-none absolute bottom-2 left-3 font-mono text-xs text-mute">
-        Drag empty space to pan. Scroll to zoom. Ember dot wires a module.
-      </p>
     </div>
   );
 }

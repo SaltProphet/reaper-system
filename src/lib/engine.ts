@@ -250,8 +250,8 @@ function rid(prefix: string) {
 export function defaultState(): Persisted {
   return {
     objective: {
-      goal: "Be known for reliable workflow rescue under the real name Justin Strange.",
-      constraints: "Real name. Blunt, non-corporate voice. Low daily posting cost.",
+      goal: "Be known for reliable workflow rescue.",
+      constraints: "Blunt, non-corporate voice. Low daily posting cost.",
       doneWhen: "One primary action is chosen and a record exists. Nothing is posted.",
     },
     graphs: [
@@ -334,7 +334,12 @@ export function loadState(): Persisted {
             ...graph,
             nodes: graph.nodes.map(({ x: _x, y: _y, ...node }) => node),
           }));
-    return { ...parsed, layout: LAYOUT, graphs: graphs.map(layoutGraph) };
+    const objective = {
+      ...parsed.objective,
+      goal: parsed.objective.goal.replaceAll(" under the real name Justin Strange", "").replaceAll("Justin Strange", ""),
+      constraints: parsed.objective.constraints.replaceAll("Real name. ", ""),
+    };
+    return { ...parsed, objective, layout: LAYOUT, graphs: graphs.map(layoutGraph) };
   } catch {
     return defaultState();
   }

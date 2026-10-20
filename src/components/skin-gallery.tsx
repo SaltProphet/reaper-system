@@ -4,9 +4,11 @@ import { SKINS, type CanvasStyle, type Contrast, type Density, type Look, type S
 export function SkinGallery({
   look,
   onChange,
+  onClose,
 }: {
   look: Look;
   onChange: (look: Look) => void;
+  onClose: () => void;
 }) {
   const [ask, setAsk] = useState(false);
 
@@ -19,10 +21,12 @@ export function SkinGallery({
   }
 
   return (
-    <section className="frame absolute top-24 right-4 z-20 w-[min(42rem,calc(100%-2rem))] bg-panel p-3">
+    <section>
       <header className="flex items-center justify-between gap-3">
         <h2 className="font-mono text-xs text-ember">REAPER // SKINS</h2>
-        <p className="font-mono text-xs text-mute">Look only. The machine stays the same.</p>
+        <button type="button" onClick={onClose} className="min-h-11 px-3 font-mono text-xs text-mute">
+          close
+        </button>
       </header>
       <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         {SKINS.map((skin) => (

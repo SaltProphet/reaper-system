@@ -35,16 +35,17 @@ export function Workbench() {
   const [panels, setPanels] = useState({
     explorer: true,
     editor: true,
-    objective: true,
+    objective: false,
     inspector: true,
     log: true,
+    skins: false,
   });
   const stageRef = useRef<HTMLDivElement>(null);
   const [bounds, setBounds] = useState({ w: 1280, h: 760 });
   const [frames, setFrames] = useState(DEFAULT_FRAMES);
   const [front, setFront] = useState<PanelId>("editor");
   const [look, setLook] = useState<Look | null>(null);
-  const [skinsOpen, setSkinsOpen] = useState(false);
+  const [nav, setNav] = useState<"workflow" | "integrations">("workflow");
 
   useEffect(() => {
     setState(loadState());
@@ -135,34 +136,20 @@ export function Workbench() {
 
   return (
     <div className="reaper-ui relative min-h-dvh bg-ink text-bone">
-      <header className="border-b border-ember/40 px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <Mark />
-            <div className="min-w-0">
-              <h1 className="font-mono text-sm tracking-[0.22em] text-paper">REAPER</h1>
-              <p className="truncate font-mono text-xs text-mute">
-                Operator agent · {parentGraph ? `${parentGraph.name} / ${graph.name}` : graph.name}
-              </p>
-            </div>
-          </div>
-          <p className="max-w-md truncate font-mono text-xs text-bone">{state.objective.goal}</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs text-ember">● {live ? "RUNNING" : run?.status === "paused" ? "HOLD" : run?.status === "failed" ? "BLOCKED" : run?.status === "done" ? "DONE" : "IDLE"}</span>
-            <Ctrl label="Run" onClick={onRun} disabled={live} />
-            <Ctrl label="Step" onClick={onStep} disabled={live} />
-            <Ctrl label="Hold" onClick={() => commit(setStatus(state, "paused"))} disabled={!live} />
-            <Ctrl label="Resume" onClick={() => commit(setStatus(state, "running"))} disabled={run?.status !== "paused"} />
-          </div>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-panel px-4 py-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <Mark />
+          <h1 className="font-mono text-sm tracking-[0.14em] text-paper">REAPER</h1>
         </div>
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-1">
           {(
             [
-              ["explorer", "Sessions"],
-              ["editor", "Plan"],
-              ["objective", "Mission"],
-              ["inspector", "Module"],
-              ["log", "Trace"],
+              ["explorer", "Integrations"],
+              ["editor", "Workflow"],
+              ["objective", "Objective"],
+              ["inspector", "Inspector"],
+              ["log", "Log"],
+              ["skins", "Skins"],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -170,53 +157,64 @@ export function Workbench() {
               type="button"
               onClick={() => toggle(key)}
               className={`min-h-11 border px-3 font-mono text-xs ${
-                panels[key] ? "border-ember text-ember" : "border-line text-mute"
+                panels[key] ? "border-line bg-well text-paper" : "border-transparent text-mute"
               }`}
             >
               {label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setSkinsOpen((open) => !open)}
-            className={`min-h-11 border px-3 font-mono text-xs ${skinsOpen ? "border-ember text-ember" : "border-line text-mute"}`}
-          >
-            Skins
-          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex min-h-11 items-center gap-2 border border-line px-3 font-mono text-xs text-bone">
+            <span className={`size-1.5 rounded-full ${live ? "bg-ember" : "bg-mute"}`} />
+            {live ? "Running" : run?.status === "paused" ? "Paused" : run?.status === "failed" ? "Failed" : run?.status === "done" ? "Done" : "Idle"}
+          </span>
+          <Ctrl label="Run" primary onClick={onRun} disabled={live} />
+          <Ctrl label="Step" onClick={onStep} disabled={live} />
+          <Ctrl label="Pause" onClick={() => commit(setStatus(state, "paused"))} disabled={!live} />
+          <Ctrl label="Resume" onClick={() => commit(setStatus(state, "running"))} disabled={run?.status !== "paused"} />
         </div>
       </header>
-      {skinsOpen && look ? (
-        <SkinGallery
-          look={look}
-          onChange={(next) => {
-            setLook(next);
-            applyLook(next);
-            saveLook(next);
-          }}
-        />
-      ) : null}
 
-      <div ref={stageRef} className="relative h-[calc(100dvh-8.5rem)]">
+      <div ref={stageRef} className="relative h-[calc(100dvh-4.25rem)]">
         {panels.explorer ? (
-          <Panel id="explorer" title="SESSIONS" onClose={() => toggle("explorer")} frames={frames} bounds={bounds} front={front === "explorer"} onFront={() => setFront("explorer")} onFrame={(frame) => setFrames((prev) => ({ ...prev, explorer: frame }))}>
+          <Panel id="explorer" title="Integrations" onClose={() => toggle("explorer")} frames={frames} bounds={bounds} front={front === "explorer"} onFront={() => setFront("explorer")} onFrame={(frame) => setFrames((prev) => ({ ...prev, explorer: frame }))}>
             <ul className="space-y-1">
-              <ExplorerButton label="This agent" onClick={() => setViewId("workbench")} />
-              <ExplorerButton label="Decision deck" onClick={() => setViewId("decision-deck")} />
+              <ExplorerButton label="Workflow" onClick={() => { setNav("workflow"); setViewId("workbench"); }} />
+              <ExplorerButton label="Integrations" onClick={() => setNav("integrations")} />
             </ul>
-            <p className="mt-4 font-mono text-xs text-mute">Traces</p>
-            <ul className="mt-2 space-y-1">
-              {state.runs.map((item) => (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className="w-full text-left font-mono text-xs text-mute hover:text-paper"
-                    onClick={() => commit({ ...state, activeRunId: item.id })}
-                  >
-                    {item.id} · {item.status}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {nav === "integrations" ? (
+              <ul className="mt-4 space-y-1">
+                {graph.nodes.map((node) => (
+                  <li key={node.id}>
+                    <button
+                      type="button"
+                      className="w-full text-left font-mono text-sm text-bone hover:text-ember"
+                      onClick={() => {
+                        setSelectedId(node.id);
+                        setDetail({ graphId: graph.id, nodeId: node.id });
+                      }}
+                    >
+                      {node.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <ul className="mt-4 space-y-1">
+                {state.runs.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className="w-full text-left font-mono text-xs text-mute hover:text-paper"
+                      onClick={() => commit({ ...state, activeRunId: item.id })}
+                    >
+                      {item.id} · {item.status}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Panel>
         ) : (
           <div />
@@ -226,7 +224,7 @@ export function Workbench() {
           {panels.editor ? (
             <Panel
               id="editor"
-              title={`PLAN · ${graph.name.toUpperCase()}`}
+              title="Workflow"
               onClose={() => toggle("editor")}
               frames={frames}
               bounds={bounds}
@@ -292,9 +290,9 @@ export function Workbench() {
             </Panel>
           ) : null}
           {panels.log ? (
-            <Panel id="log" title="TRACE" onClose={() => toggle("log")} frames={frames} bounds={bounds} front={front === "log"} onFront={() => setFront("log")} onFrame={(frame) => setFrames((prev) => ({ ...prev, log: frame }))}>
+            <Panel id="log" title="Log" onClose={() => toggle("log")} frames={frames} bounds={bounds} front={front === "log"} onFront={() => setFront("log")} onFrame={(frame) => setFrames((prev) => ({ ...prev, log: frame }))}>
               <pre className="max-h-full overflow-auto font-mono text-xs text-mute">
-                {(run?.log ?? [{ t: "--", level: "system", text: "Agent idle. No trace yet." }])
+                {(run?.log ?? [{ t: "--", level: "system", text: "Waiting for a run." }])
                   .slice(-6)
                   .map((entry) => `[${entry.t}] ${entry.level.toUpperCase()} ${entry.text}`)
                   .join("\n")}
@@ -305,7 +303,7 @@ export function Workbench() {
 
         <div className="space-y-3">
           {panels.objective ? (
-            <Panel id="objective" title="MISSION" onClose={() => toggle("objective")} frames={frames} bounds={bounds} front={front === "objective"} onFront={() => setFront("objective")} onFrame={(frame) => setFrames((prev) => ({ ...prev, objective: frame }))}>
+            <Panel id="objective" title="Objective" onClose={() => toggle("objective")} frames={frames} bounds={bounds} front={front === "objective"} onFront={() => setFront("objective")} onFrame={(frame) => setFrames((prev) => ({ ...prev, objective: frame }))}>
               <Field
                 label="Goal"
                 value={state.objective.goal}
@@ -324,7 +322,7 @@ export function Workbench() {
             </Panel>
           ) : null}
           {panels.inspector ? (
-            <Panel id="inspector" title="MODULE" onClose={() => toggle("inspector")} frames={frames} bounds={bounds} front={front === "inspector"} onFront={() => setFront("inspector")} onFrame={(frame) => setFrames((prev) => ({ ...prev, inspector: frame }))}>
+            <Panel id="inspector" title="Inspector" onClose={() => toggle("inspector")} frames={frames} bounds={bounds} front={front === "inspector"} onFront={() => setFront("inspector")} onFrame={(frame) => setFrames((prev) => ({ ...prev, inspector: frame }))}>
               {detailNode ? (
                 <InspectorBody
                   node={detailNode}
@@ -347,6 +345,28 @@ export function Workbench() {
             </Panel>
           ) : null}
         </div>
+        {panels.skins && look ? (
+          <Panel
+            id="skins"
+            title="Skins"
+            onClose={() => toggle("skins")}
+            frames={frames}
+            bounds={bounds}
+            front={front === "skins"}
+            onFront={() => setFront("skins")}
+            onFrame={(frame) => setFrames((prev) => ({ ...prev, skins: frame }))}
+          >
+            <SkinGallery
+              look={look}
+              onClose={() => toggle("skins")}
+              onChange={(next) => {
+                setLook(next);
+                applyLook(next);
+                saveLook(next);
+              }}
+            />
+          </Panel>
+        ) : null}
       </div>
     </div>
   );
@@ -377,7 +397,7 @@ function InspectorBody({
   return (
     <div className="space-y-4">
       <section>
-        <h3 className="font-mono text-xs text-ember">CONTRACT</h3>
+        <h3 className="font-mono text-xs text-mute">Contract</h3>
         <p className="mt-2 font-mono text-sm text-paper">
           {graphName} / {node.name}
           {nested ? " · inside" : ""}
@@ -389,7 +409,7 @@ function InspectorBody({
         </dl>
       </section>
       <section>
-        <h3 className="font-mono text-xs text-ember">IMPLEMENTATION</h3>
+        <h3 className="font-mono text-xs text-mute">Implementation</h3>
         <p className="mt-2 font-mono text-sm text-paper">{node.implId}</p>
         <p className="mt-1 font-mono text-sm text-mute">{purpose(node.implId)}</p>
         {choices.length > 0 ? (
@@ -418,15 +438,15 @@ function InspectorBody({
       </section>
       {node.childGraphId ? (
         <section>
-          <h3 className="font-mono text-xs text-ember">INSIDE</h3>
-          <p className="mt-2 font-mono text-sm text-mute">{childCount} modules. Closing this returns the parent to one box.</p>
+          <h3 className="font-mono text-xs text-mute">Inside</h3>
+          <p className="mt-2 font-mono text-sm text-mute">{childCount} modules.</p>
           <button type="button" onClick={onEnter} className="mt-2 font-mono text-sm text-ember">
-            Enter this agent
+            Open
           </button>
         </section>
       ) : null}
       <section>
-        <h3 className="font-mono text-xs text-ember">POLICY</h3>
+        <h3 className="font-mono text-xs text-mute">Policy</h3>
         <ul className="mt-2 space-y-1">
           {POLICIES.map((policy) => (
             <li key={policy} className="font-mono text-xs text-mute">
@@ -435,7 +455,7 @@ function InspectorBody({
           ))}
         </ul>
         <button type="button" onClick={onCut} className="mt-3 font-mono text-sm text-mute">
-          Disconnect inputs
+          Cut incoming
         </button>
       </section>
     </div>
@@ -460,18 +480,19 @@ function purpose(implId: string) {
   );
 }
 
-const FRAME_KEY = "reaper-frames-v2";
+const FRAME_KEY = "reaper-frames-v4";
 const SNAP = 14;
 
-type PanelId = "explorer" | "editor" | "objective" | "inspector" | "log";
+type PanelId = "explorer" | "editor" | "objective" | "inspector" | "log" | "skins";
 type Frame = { x: number; y: number; w: number; h: number };
 
 const DEFAULT_FRAMES: Record<PanelId, Frame> = {
-  explorer: { x: 12, y: 8, w: 220, h: 640 },
-  editor: { x: 244, y: 8, w: 680, h: 440 },
-  log: { x: 244, y: 460, w: 680, h: 188 },
-  objective: { x: 936, y: 8, w: 300, h: 230 },
-  inspector: { x: 936, y: 250, w: 300, h: 398 },
+  explorer: { x: 12, y: 12, w: 220, h: 760 },
+  editor: { x: 244, y: 12, w: 880, h: 520 },
+  log: { x: 244, y: 544, w: 880, h: 228 },
+  objective: { x: 244, y: 12, w: 420, h: 280 },
+  inspector: { x: 1136, y: 12, w: 280, h: 760 },
+  skins: { x: 360, y: 72, w: 640, h: 520 },
 };
 
 function peersOf(frames: Record<PanelId, Frame>, id: PanelId) {
@@ -561,11 +582,11 @@ function Panel({
           drag.current = null;
         }}
       >
-        <h2 className="font-mono text-xs text-ember">{title}</h2>
+        <h2 className="font-mono text-xs tracking-wide text-mute">{title}</h2>
         <span className="flex items-center gap-3">
           {extra}
-          <button type="button" onClick={onClose} className="font-mono text-xs text-mute">
-            close
+          <button type="button" onClick={onClose} aria-label={`Close ${title}`} className="min-h-11 min-w-11 font-mono text-sm text-mute">
+            ×
           </button>
         </span>
       </header>
@@ -611,13 +632,25 @@ function Mark() {
   );
 }
 
-function Ctrl({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
+function Ctrl({
+  label,
+  onClick,
+  disabled,
+  primary,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="min-h-11 border border-ember bg-ember-dim px-3 font-mono text-xs text-ember disabled:opacity-40"
+      className={`min-h-11 border px-3 font-mono text-xs disabled:opacity-40 ${
+        primary ? "border-ember bg-ember text-ink" : "border-line bg-transparent text-bone"
+      }`}
     >
       {label}
     </button>
@@ -627,7 +660,7 @@ function Ctrl({ label, onClick, disabled }: { label: string; onClick: () => void
 function ExplorerButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <li>
-      <button type="button" onClick={onClick} className="font-mono text-sm text-bone hover:text-ember">
+      <button type="button" onClick={onClick} className="flex min-h-11 w-full items-center px-2 text-left font-mono text-sm text-bone hover:bg-well">
         {label}
       </button>
     </li>
