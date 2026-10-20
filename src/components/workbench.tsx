@@ -1,20 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  IMPLS,
   POLICIES,
   connectNodes,
   currentNode,
   cutIncoming,
   loadState,
   moveNode,
+  portsMatch,
+  resizeNode,
   saveState,
   setStatus,
   startRun,
   stepRun,
   swapImpl,
+  type NodeDef,
   type Persisted,
   type Run,
 } from "@/lib/engine";
 import { NodeCanvas } from "@/components/node-canvas";
+import { SkinGallery } from "@/components/skin-gallery";
+import { applyLook, loadLook, saveLook, type Look } from "@/lib/skins";
 
 const PACE_MS = 700;
 
@@ -24,13 +30,56 @@ export function Workbench() {
   const [selectedId, setSelectedId] = useState<string | null>("child");
   const [pace, setPace] = useState(true);
   const [notice, setNotice] = useState("");
+  const [insideId, setInsideId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<{ graphId: string; nodeId: string } | null>(null);
+  const [panels, setPanels] = useState({
+    explorer: true,
+    editor: true,
+    objective: true,
+    inspector: true,
+    log: true,
+  });
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [bounds, setBounds] = useState({ w: 1280, h: 760 });
+  const [frames, setFrames] = useState(DEFAULT_FRAMES);
+  const [front, setFront] = useState<PanelId>("editor");
+  const [look, setLook] = useState<Look | null>(null);
+  const [skinsOpen, setSkinsOpen] = useState(false);
 
   useEffect(() => {
     setState(loadState());
+    const next = loadLook();
+    setLook(next);
+    applyLook(next);
   }, []);
 
   useEffect(() => {
     if (state) saveState(state);
+  }, [state]);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(FRAME_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as typeof DEFAULT_FRAMES;
+      if (parsed.editor && parsed.inspector) setFrames({ ...DEFAULT_FRAMES, ...parsed });
+    } catch {
+      /* keep defaults */
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(FRAME_KEY, JSON.stringify(frames));
+  }, [frames]);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const watch = new ResizeObserver(() => {
+      setBounds({ w: el.clientWidth, h: el.clientHeight });
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
   }, [state]);
 
   const run = state?.runs.find((item) => item.id === state.activeRunId) ?? null;
@@ -50,6 +99,13 @@ export function Workbench() {
 
   const graph = state.graphs.find((item) => item.id === viewId) ?? state.graphs[0];
   const selected = graph.nodes.find((node) => node.id === selectedId) ?? null;
+  const insideNode = graph.nodes.find((node) => node.id === insideId && node.childGraphId) ?? null;
+  const insideGraph = insideNode?.childGraphId
+    ? state.graphs.find((item) => item.id === insideNode.childGraphId) ?? null
+    : null;
+  const detailGraph = state.graphs.find((item) => item.id === (detail?.graphId ?? graph.id)) ?? graph;
+  const detailNode =
+    detailGraph.nodes.find((node) => node.id === (detail?.nodeId ?? selected?.id)) ?? selected;
   const cursor = currentNode(state);
   const parentGraph = state.graphs.find((item) => item.nodes.some((node) => node.childGraphId === graph.id));
 
@@ -73,185 +129,485 @@ export function Workbench() {
     commit(current?.status === "running" ? setStatus(stepped, "paused") : stepped);
   }
 
+  function toggle(key: keyof typeof panels) {
+    setPanels((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
   return (
-    <div className="min-h-dvh bg-ink text-bone">
-      <div className="mx-auto grid max-w-7xl gap-3 px-3 py-4 lg:grid-cols-[12rem_minmax(0,1fr)_16rem]">
-        <header className="frame bg-panel px-4 py-3 lg:col-span-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="font-mono text-base text-paper">REAPER // WORKBENCH</h1>
-              <p className="mt-1 font-mono text-sm text-mute">
-                {parentGraph ? `${parentGraph.name} / ${graph.name}` : graph.name}
-                {" · "}
-                {run ? run.status.toUpperCase() : "ENGINE READY"}
+    <div className="reaper-ui relative min-h-dvh bg-ink text-bone">
+      <header className="border-b border-ember/40 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <Mark />
+            <div className="min-w-0">
+              <h1 className="font-mono text-sm tracking-[0.22em] text-paper">REAPER</h1>
+              <p className="truncate font-mono text-xs text-mute">
+                Operator agent · {parentGraph ? `${parentGraph.name} / ${graph.name}` : graph.name}
               </p>
             </div>
-            <p className="font-mono text-xs text-ember">
-              {live ? "● RUNNING" : run?.status === "failed" ? "● FAILED" : "● ENGINE READY"}
-            </p>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <p className="max-w-md truncate font-mono text-xs text-bone">{state.objective.goal}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-xs text-ember">● {live ? "RUNNING" : run?.status === "paused" ? "HOLD" : run?.status === "failed" ? "BLOCKED" : run?.status === "done" ? "DONE" : "IDLE"}</span>
             <Ctrl label="Run" onClick={onRun} disabled={live} />
             <Ctrl label="Step" onClick={onStep} disabled={live} />
-            <Ctrl label="Pause" onClick={() => commit(setStatus(state, "paused"))} disabled={!live} />
-            <Ctrl
-              label="Resume"
-              onClick={() => commit(setStatus(state, "running"))}
-              disabled={run?.status !== "paused"}
-            />
-            <Ctrl
-              label="Inspect"
-              onClick={() => {
-                if (cursor) {
-                  setViewId(run?.stack.at(-1)?.graphId ?? viewId);
-                  setSelectedId(cursor.id);
-                }
-              }}
-            />
-            <label className="ml-auto flex min-h-11 items-center gap-2 font-mono text-xs text-mute">
-              <input type="checkbox" checked={pace} onChange={(e) => setPace(e.target.checked)} />
-              Demo pace
-            </label>
+            <Ctrl label="Hold" onClick={() => commit(setStatus(state, "paused"))} disabled={!live} />
+            <Ctrl label="Resume" onClick={() => commit(setStatus(state, "running"))} disabled={run?.status !== "paused"} />
           </div>
-        </header>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {(
+            [
+              ["explorer", "Sessions"],
+              ["editor", "Plan"],
+              ["objective", "Mission"],
+              ["inspector", "Module"],
+              ["log", "Trace"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => toggle(key)}
+              className={`min-h-11 border px-3 font-mono text-xs ${
+                panels[key] ? "border-ember text-ember" : "border-line text-mute"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setSkinsOpen((open) => !open)}
+            className={`min-h-11 border px-3 font-mono text-xs ${skinsOpen ? "border-ember text-ember" : "border-line text-mute"}`}
+          >
+            Skins
+          </button>
+        </div>
+      </header>
+      {skinsOpen && look ? (
+        <SkinGallery
+          look={look}
+          onChange={(next) => {
+            setLook(next);
+            applyLook(next);
+            saveLook(next);
+          }}
+        />
+      ) : null}
 
-        <aside className="frame bg-panel p-3">
-          <p className="font-mono text-xs text-ember">EXPLORER</p>
-          <ul className="mt-3 space-y-1">
-            <ExplorerButton label="Workspace" onClick={() => setViewId("workbench")} />
-            <ExplorerButton label="Objectives" onClick={() => setViewId("workbench")} />
-            <ExplorerButton label="Frameworks" onClick={() => setViewId("decision-deck")} />
-            <ExplorerButton label="Run history" onClick={() => setSelectedId(null)} />
-          </ul>
-          <ul className="mt-4 space-y-1">
-            {state.runs.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  className="w-full text-left font-mono text-xs text-mute hover:text-paper"
-                  onClick={() => commit({ ...state, activeRunId: item.id })}
-                >
-                  {item.id} · {item.status}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </aside>
-
-        <main className="space-y-3">
-          <section className="frame bg-panel p-3">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="font-mono text-xs text-ember">EDITOR · {graph.name.toUpperCase()}</h2>
-              {parentGraph ? (
-                <button type="button" className="font-mono text-xs text-ember" onClick={() => setViewId(parentGraph.id)}>
-                  Up to {parentGraph.name}
-                </button>
-              ) : null}
-            </div>
-            <NodeCanvas
-              graph={graph}
-              selectedId={selectedId}
-              hotId={cursor && run?.stack.at(-1)?.graphId === graph.id ? cursor.id : null}
-              onSelect={setSelectedId}
-              onOpen={(node) => {
-                if (node.childGraphId) setViewId(node.childGraphId);
-              }}
-              onMove={(id, x, y) => setState(moveNode(model, graph.id, id, x, y))}
-              onConnect={(fromId, toId) => {
-                const result = connectNodes(model, graph.id, fromId, toId);
-                commit(result.state, result.error ?? "");
-              }}
-            />
-            {notice ? <p className="mt-3 font-mono text-xs text-ember">{notice}</p> : null}
-          </section>
-
-          <section className="well p-3">
-            <h2 className="font-mono text-xs text-ember">EXECUTION LOG</h2>
-            <pre className="mt-2 max-h-48 overflow-auto font-mono text-xs leading-relaxed text-bone">
-              {(run?.log ?? [{ t: "--", level: "system", text: "Waiting for a run." }])
-                .map((entry) => `[${entry.t}] ${entry.level.toUpperCase()} ${entry.text}`)
-                .join("\n")}
-            </pre>
-          </section>
-        </main>
-
-        <aside className="frame bg-panel p-3">
-          <p className="font-mono text-xs text-ember">INSPECTOR</p>
-          <div className="mt-3 space-y-2">
-            <Field
-              label="Goal"
-              value={state.objective.goal}
-              onChange={(goal) => commit({ ...state, objective: { ...state.objective, goal } })}
-            />
-            <Field
-              label="Constraints"
-              value={state.objective.constraints}
-              onChange={(constraints) => commit({ ...state, objective: { ...state.objective, constraints } })}
-            />
-            <Field
-              label="Done when"
-              value={state.objective.doneWhen}
-              onChange={(doneWhen) => commit({ ...state, objective: { ...state.objective, doneWhen } })}
-            />
-          </div>
-          {selected ? (
-            <dl className="mt-3 space-y-2 font-mono text-xs">
-              <Row k="Module" v={selected.name} />
-              <Row k="Type" v={selected.kind} />
-              <Row k="Impl" v={selected.implId} />
-              <Row k="Inputs" v={selected.inputs.join(", ") || "none"} />
-              <Row k="Outputs" v={selected.outputs.join(", ")} />
-              <Row k="Children" v={selected.childGraphId ? "nested graph" : "0"} />
-              <Row k="Policy" v="Inherited" />
-              <Row k="Budget" v={run ? String(run.budgetLeft) : String(24)} />
-            </dl>
-          ) : (
-            <p className="mt-3 font-mono text-xs text-mute">Select a module.</p>
-          )}
-          {selected?.kind === "framework" && viewId === "workbench" ? (
-            <div className="mt-4 space-y-2">
-              <Ctrl
-                label="Swap compatible"
-                onClick={() => {
-                  const result = swapImpl(state, "workbench", selected.id, "reaper.compact");
-                  commit(result.state, result.error ?? "Compatible swap accepted.");
-                }}
-              />
-              <Ctrl
-                label="Try invalid swap"
-                onClick={() => {
-                  const result = swapImpl(state, "workbench", selected.id, "reaper.bad-ports");
-                  commit(result.state, result.error ?? "Unexpected accept.");
-                }}
-              />
-              <Ctrl
-                label="Restore Decision Deck"
-                onClick={() => {
-                  const result = swapImpl(state, "workbench", selected.id, "reaper.decision-deck");
-                  commit(result.state, result.error ?? "Decision Deck restored.");
-                }}
-              />
-            </div>
-          ) : null}
-          {selected ? (
-            <div className="mt-3">
-              <Ctrl label="Cut incoming" onClick={() => commit(cutIncoming(model, viewId, selected.id))} />
-            </div>
-          ) : null}
-          <div className="mt-4">
-            <p className="font-mono text-xs text-ember">POLICY</p>
+      <div ref={stageRef} className="relative h-[calc(100dvh-8.5rem)]">
+        {panels.explorer ? (
+          <Panel id="explorer" title="SESSIONS" onClose={() => toggle("explorer")} frames={frames} bounds={bounds} front={front === "explorer"} onFront={() => setFront("explorer")} onFrame={(frame) => setFrames((prev) => ({ ...prev, explorer: frame }))}>
+            <ul className="space-y-1">
+              <ExplorerButton label="This agent" onClick={() => setViewId("workbench")} />
+              <ExplorerButton label="Decision deck" onClick={() => setViewId("decision-deck")} />
+            </ul>
+            <p className="mt-4 font-mono text-xs text-mute">Traces</p>
             <ul className="mt-2 space-y-1">
-              {POLICIES.map((policy) => (
-                <li key={policy} className="font-mono text-xs text-mute">
-                  {policy}
+              {state.runs.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className="w-full text-left font-mono text-xs text-mute hover:text-paper"
+                    onClick={() => commit({ ...state, activeRunId: item.id })}
+                  >
+                    {item.id} · {item.status}
+                  </button>
                 </li>
               ))}
             </ul>
-          </div>
-          <Latest run={run} />
-        </aside>
+          </Panel>
+        ) : (
+          <div />
+        )}
+
+        <div className="space-y-3">
+          {panels.editor ? (
+            <Panel
+              id="editor"
+              title={`PLAN · ${graph.name.toUpperCase()}`}
+              onClose={() => toggle("editor")}
+              frames={frames}
+              bounds={bounds}
+              front={front === "editor"}
+              onFront={() => setFront("editor")}
+              onFrame={(frame) => setFrames((prev) => ({ ...prev, editor: frame }))}
+              extra={
+                parentGraph ? (
+                  <button type="button" className="font-mono text-xs text-ember" onClick={() => setViewId(parentGraph.id)}>
+                    Up
+                  </button>
+                ) : null
+              }
+            >
+              <NodeCanvas
+                graph={graph}
+                selectedId={selectedId}
+                hotId={cursor && run?.stack.at(-1)?.graphId === graph.id ? cursor.id : null}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  setDetail({ graphId: graph.id, nodeId: id });
+                }}
+                onOpen={(node) => {
+                  if (!node.childGraphId) return;
+                  setInsideId((current) => (current === node.id ? null : node.id));
+                  setSelectedId(node.id);
+                  setDetail({ graphId: graph.id, nodeId: node.id });
+                }}
+                onMove={(id, x, y) => setState(moveNode(model, graph.id, id, x, y))}
+                onResize={(id, w, h) => setState(resizeNode(model, graph.id, id, w, h))}
+                onConnect={(fromId, toId) => {
+                  const result = connectNodes(model, graph.id, fromId, toId);
+                  commit(result.state, result.error ?? "");
+                }}
+              />
+              {notice ? <p className="mt-2 font-mono text-xs text-ember">{notice}</p> : null}
+              {insideGraph ? (
+                <div className="mt-3 border border-line p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-mono text-sm text-paper">Inside {insideNode?.name}</p>
+                    <button type="button" className="font-mono text-xs text-mute" onClick={() => setInsideId(null)}>
+                      Collapse
+                    </button>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {insideGraph.nodes.map((node) => (
+                      <button
+                        key={node.id}
+                        type="button"
+                        onClick={() => setDetail({ graphId: insideGraph.id, nodeId: node.id })}
+                        className="w-44 border border-line bg-ink p-3 text-left"
+                      >
+                        <span className="block font-mono text-sm text-paper">{node.name}</span>
+                        <span className="mt-1 block font-mono text-xs text-ember">{node.kind}</span>
+                        <span className="mt-2 block font-mono text-xs text-mute">
+                          {node.inputs[0]} → {node.outputs[0]}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </Panel>
+          ) : null}
+          {panels.log ? (
+            <Panel id="log" title="TRACE" onClose={() => toggle("log")} frames={frames} bounds={bounds} front={front === "log"} onFront={() => setFront("log")} onFrame={(frame) => setFrames((prev) => ({ ...prev, log: frame }))}>
+              <pre className="max-h-full overflow-auto font-mono text-xs text-mute">
+                {(run?.log ?? [{ t: "--", level: "system", text: "Agent idle. No trace yet." }])
+                  .slice(-6)
+                  .map((entry) => `[${entry.t}] ${entry.level.toUpperCase()} ${entry.text}`)
+                  .join("\n")}
+              </pre>
+            </Panel>
+          ) : null}
+        </div>
+
+        <div className="space-y-3">
+          {panels.objective ? (
+            <Panel id="objective" title="MISSION" onClose={() => toggle("objective")} frames={frames} bounds={bounds} front={front === "objective"} onFront={() => setFront("objective")} onFrame={(frame) => setFrames((prev) => ({ ...prev, objective: frame }))}>
+              <Field
+                label="Goal"
+                value={state.objective.goal}
+                onChange={(goal) => commit({ ...state, objective: { ...state.objective, goal } })}
+              />
+              <Field
+                label="Constraints"
+                value={state.objective.constraints}
+                onChange={(constraints) => commit({ ...state, objective: { ...state.objective, constraints } })}
+              />
+              <Field
+                label="Done when"
+                value={state.objective.doneWhen}
+                onChange={(doneWhen) => commit({ ...state, objective: { ...state.objective, doneWhen } })}
+              />
+            </Panel>
+          ) : null}
+          {panels.inspector ? (
+            <Panel id="inspector" title="MODULE" onClose={() => toggle("inspector")} frames={frames} bounds={bounds} front={front === "inspector"} onFront={() => setFront("inspector")} onFrame={(frame) => setFrames((prev) => ({ ...prev, inspector: frame }))}>
+              {detailNode ? (
+                <InspectorBody
+                  node={detailNode}
+                  graphName={detailGraph?.name ?? graph.name}
+                  nested={detailGraph?.id !== graph.id}
+                  childCount={detailNode.childGraphId ? (childOf(state, detailNode)?.nodes.length ?? 0) : 0}
+                  onUse={(implId) => {
+                    const result = swapImpl(state, detailGraph.id, detailNode.id, implId);
+                    commit(result.state, result.error ?? `Using ${implId}.`);
+                  }}
+                  onEnter={() => {
+                    if (detailNode.childGraphId) setViewId(detailNode.childGraphId);
+                  }}
+                  onCut={() => commit(cutIncoming(model, graph.id, detailNode.id))}
+                />
+              ) : (
+                <p className="font-mono text-sm text-mute">Select a module.</p>
+              )}
+              <Latest run={run} />
+            </Panel>
+          ) : null}
+        </div>
       </div>
     </div>
+  );
+}
+
+function childOf(state: Persisted, node: NodeDef) {
+  return state.graphs.find((item) => item.id === node.childGraphId) ?? null;
+}
+
+function InspectorBody({
+  node,
+  graphName,
+  nested,
+  childCount,
+  onUse,
+  onEnter,
+  onCut,
+}: {
+  node: NodeDef;
+  graphName: string;
+  nested: boolean;
+  childCount: number;
+  onUse: (implId: string) => void;
+  onEnter: () => void;
+  onCut: () => void;
+}) {
+  const choices = IMPLS.filter((impl) => impl.kind === node.kind);
+  return (
+    <div className="space-y-4">
+      <section>
+        <h3 className="font-mono text-xs text-ember">CONTRACT</h3>
+        <p className="mt-2 font-mono text-sm text-paper">
+          {graphName} / {node.name}
+          {nested ? " · inside" : ""}
+        </p>
+        <dl className="mt-2 space-y-1 font-mono text-sm">
+          <Row k="Kind" v={node.kind} />
+          <Row k="In" v={node.inputs.join(", ") || "none"} />
+          <Row k="Out" v={node.outputs.join(", ")} />
+        </dl>
+      </section>
+      <section>
+        <h3 className="font-mono text-xs text-ember">IMPLEMENTATION</h3>
+        <p className="mt-2 font-mono text-sm text-paper">{node.implId}</p>
+        <p className="mt-1 font-mono text-sm text-mute">{purpose(node.implId)}</p>
+        {choices.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {choices.map((impl) => {
+              const fits = portsMatch(node, impl);
+              const current = impl.id === node.implId;
+              return (
+                <li key={impl.id}>
+                  <button
+                    type="button"
+                    disabled={!fits || current}
+                    onClick={() => onUse(impl.id)}
+                    className="w-full border border-line px-2 py-2 text-left font-mono text-sm disabled:opacity-60"
+                  >
+                    <span className="text-paper">{impl.label}</span>
+                    <span className="mt-1 block text-xs text-mute">{fits ? impl.does : "Ports do not match."}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="mt-2 font-mono text-sm text-mute">No other implementation shares this contract.</p>
+        )}
+      </section>
+      {node.childGraphId ? (
+        <section>
+          <h3 className="font-mono text-xs text-ember">INSIDE</h3>
+          <p className="mt-2 font-mono text-sm text-mute">{childCount} modules. Closing this returns the parent to one box.</p>
+          <button type="button" onClick={onEnter} className="mt-2 font-mono text-sm text-ember">
+            Enter this agent
+          </button>
+        </section>
+      ) : null}
+      <section>
+        <h3 className="font-mono text-xs text-ember">POLICY</h3>
+        <ul className="mt-2 space-y-1">
+          {POLICIES.map((policy) => (
+            <li key={policy} className="font-mono text-xs text-mute">
+              {policy}
+            </li>
+          ))}
+        </ul>
+        <button type="button" onClick={onCut} className="mt-3 font-mono text-sm text-mute">
+          Disconnect inputs
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function purpose(implId: string) {
+  return (
+    IMPLS.find((impl) => impl.id === implId)?.does ??
+    {
+      "human.objective": "Hold the goal, the constraints, and the done-when.",
+      "tool.research": "Collect sources for the objective. Missing facts stay missing.",
+      "agent.results": "Bind a report to the record. Withhold it if the record is absent.",
+      "stage.research": "Accept parent sources.",
+      "stage.evidence": "Separate what is supported from what is only plausible.",
+      "stage.analysis": "Interpret the evidence. Label it as a hypothesis.",
+      "stage.prioritization": "Rank one primary move and kill the rest.",
+      "stage.execution": "Recommend the move. Do not post it.",
+      "stage.recordkeeping": "Write the decision, the evidence, and the next source.",
+    }[implId] ??
+    "Produce the declared output from the declared inputs."
+  );
+}
+
+const FRAME_KEY = "reaper-frames-v2";
+const SNAP = 14;
+
+type PanelId = "explorer" | "editor" | "objective" | "inspector" | "log";
+type Frame = { x: number; y: number; w: number; h: number };
+
+const DEFAULT_FRAMES: Record<PanelId, Frame> = {
+  explorer: { x: 12, y: 8, w: 220, h: 640 },
+  editor: { x: 244, y: 8, w: 680, h: 440 },
+  log: { x: 244, y: 460, w: 680, h: 188 },
+  objective: { x: 936, y: 8, w: 300, h: 230 },
+  inspector: { x: 936, y: 250, w: 300, h: 398 },
+};
+
+function peersOf(frames: Record<PanelId, Frame>, id: PanelId) {
+  return (Object.keys(frames) as PanelId[]).filter((key) => key !== id).map((key) => frames[key]);
+}
+
+function snapFrame(frame: Frame, peers: Frame[], bounds: { w: number; h: number }, mode: "move" | "resize") {
+  let { x, y, w, h } = frame;
+  const vx = [0, bounds.w, ...peers.flatMap((peer) => [peer.x, peer.x + peer.w])];
+  const vy = [0, bounds.h, ...peers.flatMap((peer) => [peer.y, peer.y + peer.h])];
+  if (mode === "move") {
+    for (const line of vx) {
+      if (Math.abs(x - line) <= SNAP) x = line;
+      else if (Math.abs(x + w - line) <= SNAP) x = line - w;
+    }
+    for (const line of vy) {
+      if (Math.abs(y - line) <= SNAP) y = line;
+      else if (Math.abs(y + h - line) <= SNAP) y = line - h;
+    }
+  } else {
+    for (const line of vx) {
+      if (Math.abs(x + w - line) <= SNAP) w = Math.max(180, line - x);
+    }
+    for (const line of vy) {
+      if (Math.abs(y + h - line) <= SNAP) h = Math.max(120, line - y);
+    }
+  }
+  return { x: Math.max(0, x), y: Math.max(0, y), w: Math.max(180, w), h: Math.max(120, h) };
+}
+
+function Panel({
+  id,
+  title,
+  onClose,
+  extra,
+  frames,
+  bounds,
+  front,
+  onFront,
+  onFrame,
+  children,
+}: {
+  id: PanelId;
+  title: string;
+  onClose: () => void;
+  extra?: ReactNode;
+  frames: Record<PanelId, Frame>;
+  bounds: { w: number; h: number };
+  front: boolean;
+  onFront: () => void;
+  onFrame: (frame: Frame) => void;
+  children: ReactNode;
+}) {
+  const frame = frames[id];
+  const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const resize = useRef<{ w: number; h: number; px: number; py: number } | null>(null);
+  const peers = peersOf(frames, id);
+
+  return (
+    <section
+      className="frame absolute flex flex-col overflow-hidden bg-panel"
+      style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h, zIndex: front ? 3 : 1 }}
+      onPointerDown={onFront}
+    >
+      <header
+        className="flex shrink-0 cursor-grab items-center justify-between gap-2 border-b border-line px-3 py-2 active:cursor-grabbing"
+        onPointerDown={(event) => {
+          if ((event.target as HTMLElement).closest("button")) return;
+          drag.current = { x: frame.x, y: frame.y, px: event.clientX, py: event.clientY };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (!drag.current) return;
+          const next = snapFrame(
+            {
+              ...frame,
+              x: drag.current.x + event.clientX - drag.current.px,
+              y: drag.current.y + event.clientY - drag.current.py,
+            },
+            peers,
+            bounds,
+            "move",
+          );
+          onFrame(next);
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+        }}
+      >
+        <h2 className="font-mono text-xs text-ember">{title}</h2>
+        <span className="flex items-center gap-3">
+          {extra}
+          <button type="button" onClick={onClose} className="font-mono text-xs text-mute">
+            close
+          </button>
+        </span>
+      </header>
+      <div className="min-h-0 flex-1 overflow-auto p-3">{children}</div>
+      <span
+        className="absolute right-0 bottom-0 size-4 cursor-nwse-resize border-r border-b border-ember"
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          resize.current = { w: frame.w, h: frame.h, px: event.clientX, py: event.clientY };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (!resize.current) return;
+          onFrame(
+            snapFrame(
+              {
+                ...frame,
+                w: resize.current.w + event.clientX - resize.current.px,
+                h: resize.current.h + event.clientY - resize.current.py,
+              },
+              peers,
+              bounds,
+              "resize",
+            ),
+          );
+        }}
+        onPointerUp={() => {
+          resize.current = null;
+        }}
+      />
+    </section>
+  );
+}
+
+function Mark() {
+  return (
+    <svg className="reaper-mark text-ember" width="36" height="36" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 3 L27 9.5 V20.5 L16 29 L5 20.5 V9.5 Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M16 8 V22" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M16 15 L23 21" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M3 7 V3 H7 M25 3 H29 V7 M3 25 V29 H7 M25 29 H29 V25" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
   );
 }
 

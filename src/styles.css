@@ -11,6 +11,8 @@
   --color-line: #2a2a2a;
   --color-ember: #e85d2a;
   --color-ember-dim: #2a140e;
+  --color-node: #101010;
+  --color-canvas: #0a0a0a;
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --radius: 2px;
@@ -51,7 +53,233 @@
 }
 
 .canvas-grid {
-  background-color: var(--color-well);
-  background-image: radial-gradient(circle, #2a2a2a 1px, transparent 1px);
+  background-color: var(--color-canvas);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-bone) 28%, transparent) 1px, transparent 1px);
   background-size: 18px 18px;
+}
+
+.node-face {
+  background: var(--color-node);
+}
+
+html[data-canvas="clean"] .canvas-grid {
+  background-image: none;
+}
+
+html[data-canvas="grid"] .canvas-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-bone) 16%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-bone) 16%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+html[data-density="compact"] .reaper-ui .px-4 {
+  padding-inline: 0.55rem;
+}
+html[data-density="compact"] .reaper-ui .py-3,
+html[data-density="compact"] .reaper-ui .px-3 {
+  padding-inline: 0.5rem;
+}
+html[data-density="compact"] .reaper-ui .py-2,
+html[data-density="compact"] .reaper-ui .py-3 {
+  padding-block: 0.3rem;
+}
+html[data-density="compact"] .reaper-ui .p-3 {
+  padding: 0.45rem;
+}
+html[data-density="comfortable"] .reaper-ui {
+  font-size: 15px;
+}
+
+html[data-contrast="high"] {
+  --color-bone: var(--color-paper);
+  --color-mute: var(--color-paper);
+  --color-line: var(--color-ember);
+}
+
+html[data-skin="ember"] {
+  --color-ink: #141210;
+  --color-panel: #1e1a17;
+  --color-well: #100e0c;
+  --color-raised: #2a241f;
+  --color-node: #241f1b;
+  --color-canvas: #100e0c;
+  --color-bone: #d2c6b8;
+  --color-mute: #8d8276;
+  --color-paper: #f4ece3;
+  --color-line: #3c342c;
+  --color-ember: #e85d2a;
+  --color-ember-dim: #3a1c12;
+}
+
+html[data-skin="blackout"] {
+  --color-ink: #050505;
+  --color-panel: #0e0e0e;
+  --color-well: #080808;
+  --color-raised: #161616;
+  --color-node: #141414;
+  --color-canvas: #080808;
+  --color-bone: #c6c6c6;
+  --color-mute: #8a8a8a;
+  --color-paper: #f2f2f2;
+  --color-line: #2c2c2c;
+  --color-ember: #c8c8c8;
+  --color-ember-dim: #1c1c1c;
+}
+
+html[data-skin="phosphor"] {
+  --color-ink: #0c1410;
+  --color-panel: #14201a;
+  --color-well: #0a120e;
+  --color-raised: #1c2c24;
+  --color-node: #18261e;
+  --color-canvas: #0a120e;
+  --color-bone: #c9d7cb;
+  --color-mute: #7f977f;
+  --color-paper: #eef6ee;
+  --color-line: #2a4034;
+  --color-ember: #7dba6a;
+  --color-ember-dim: #1a2e18;
+}
+
+html[data-skin="blueprint"] {
+  --color-ink: #0c1424;
+  --color-panel: #152238;
+  --color-well: #0a101c;
+  --color-raised: #1c2d48;
+  --color-node: #1a2942;
+  --color-canvas: #0a101c;
+  --color-bone: #d5deea;
+  --color-mute: #8ea0b8;
+  --color-paper: #f5f8fc;
+  --color-line: #2d4564;
+  --color-ember: #7eadd4;
+  --color-ember-dim: #1a2c40;
+}
+
+html[data-skin="abyss"] {
+  --color-ink: #071416;
+  --color-panel: #102428;
+  --color-well: #081618;
+  --color-raised: #163034;
+  --color-node: #143034;
+  --color-canvas: #081618;
+  --color-bone: #d4e4e4;
+  --color-mute: #7f9c9c;
+  --color-paper: #f2f7f7;
+  --color-line: #245054;
+  --color-ember: #6aabab;
+  --color-ember-dim: #143434;
+}
+
+html[data-skin="specter"] {
+  --color-ink: #121014;
+  --color-panel: #1c1822;
+  --color-well: #0e0c12;
+  --color-raised: #282230;
+  --color-node: #221c2a;
+  --color-canvas: #0e0c12;
+  --color-bone: #ddd6e8;
+  --color-mute: #9a90aa;
+  --color-paper: #f6f3fa;
+  --color-line: #3a3248;
+  --color-ember: #b7a4d4;
+  --color-ember-dim: #2a2234;
+}
+
+html[data-skin="notes"] {
+  --color-ink: #f3ecdf;
+  --color-panel: #fffaf1;
+  --color-well: #efe6d6;
+  --color-raised: #e7dcc8;
+  --color-node: #fffdf8;
+  --color-canvas: #efe6d6;
+  --color-bone: #4a3d30;
+  --color-mute: #7d6b58;
+  --color-paper: #1d1610;
+  --color-line: #d4c4ac;
+  --color-ember: #8c4a2f;
+  --color-ember-dim: #ead8c4;
+}
+
+html[data-skin="daybreak"] {
+  --color-ink: #f6f7f9;
+  --color-panel: #ffffff;
+  --color-well: #eef1f5;
+  --color-raised: #e6ebf1;
+  --color-node: #ffffff;
+  --color-canvas: #eef1f5;
+  --color-bone: #3d4754;
+  --color-mute: #6d7784;
+  --color-paper: #161b22;
+  --color-line: #d5dce6;
+  --color-ember: #4d6f8c;
+  --color-ember-dim: #e4edf4;
+}
+
+html[data-skin="trace"] {
+  --color-ink: #06080a;
+  --color-panel: #0c1216;
+  --color-well: #080c10;
+  --color-raised: #122026;
+  --color-node: #0e181c;
+  --color-canvas: #070b0e;
+  --color-bone: #c6f3f6;
+  --color-mute: #6f9aa0;
+  --color-paper: #f3feff;
+  --color-line: #1c3c44;
+  --color-ember: #2ee6ff;
+  --color-ember-dim: #08282e;
+}
+
+html[data-skin="trace"] .frame {
+  background-image:
+    linear-gradient(var(--color-ember), var(--color-ember)),
+    linear-gradient(var(--color-ember), var(--color-ember)),
+    linear-gradient(var(--color-ember), var(--color-ember)),
+    linear-gradient(var(--color-ember), var(--color-ember));
+  background-repeat: no-repeat;
+  background-size: 12px 1px, 1px 12px, 12px 1px, 1px 12px;
+  background-position: left top, left top, right bottom, right bottom;
+}
+
+html[data-skin="trace"] .reaper-mark {
+  filter: drop-shadow(1px 0 0 rgba(255, 46, 166, 0.7));
+}
+
+html[data-skin="eyes"] {
+  --color-ink: #ffff00;
+  --color-panel: #ff00a8;
+  --color-well: #00ffff;
+  --color-raised: #00ff00;
+  --color-node: #00ff00;
+  --color-canvas: #00ffff;
+  --color-bone: #0000ff;
+  --color-mute: #0000ff;
+  --color-paper: #0000ff;
+  --color-line: #ff0000;
+  --color-ember: #ff0000;
+  --color-ember-dim: #00ff00;
+  --font-mono: "Comic Sans MS", "Comic Sans", "Chalkboard SE", cursive;
+  --font-sans: "Comic Sans MS", "Comic Sans", "Chalkboard SE", cursive;
+}
+
+html[data-skin="eyes"] .frame,
+html[data-skin="eyes"] .reaper-ui article,
+html[data-skin="eyes"] .reaper-ui button,
+html[data-skin="eyes"] .reaper-ui textarea {
+  border-width: 4px;
+}
+
+html[data-skin="eyes"] .reaper-ui button:nth-of-type(3n + 1) {
+  background: #0000ff;
+  color: #ffff00;
+}
+html[data-skin="eyes"] .reaper-ui button:nth-of-type(3n + 2) {
+  background: #00ff00;
+  color: #ff00a8;
+}
+html[data-skin="eyes"] .reaper-ui button:nth-of-type(3n) {
+  background: #ffff00;
+  color: #0000ff;
 }

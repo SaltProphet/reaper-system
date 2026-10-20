@@ -15,6 +15,8 @@ export type NodeDef = {
   childGraphId?: string;
   x?: number;
   y?: number;
+  w?: number;
+  h?: number;
 };
 
 export type Edge = { id: string; from: string; to: string };
@@ -32,6 +34,7 @@ export type ImplSpec = {
   kind: Kind;
   inputs: string[];
   outputs: string[];
+  does: string;
   childGraphId?: string;
 };
 
@@ -95,6 +98,7 @@ export const IMPLS: ImplSpec[] = [
     kind: "framework",
     inputs: ["sources"],
     outputs: ["record"],
+    does: "Run the six-stage decision deck and return one record.",
     childGraphId: "decision-deck",
   },
   {
@@ -103,6 +107,7 @@ export const IMPLS: ImplSpec[] = [
     kind: "framework",
     inputs: ["sources"],
     outputs: ["record"],
+    does: "Return one record in a single pass. Same ports as the deck.",
   },
   {
     id: "reaper.bad-ports",
@@ -110,6 +115,7 @@ export const IMPLS: ImplSpec[] = [
     kind: "framework",
     inputs: ["sources", "budget"],
     outputs: ["record"],
+    does: "Asks for a budget input this box does not have.",
   },
 ];
 
@@ -167,6 +173,23 @@ export function orderedNodes(graph: Graph): NodeDef[] | null {
 
 function replaceGraph(state: Persisted, graph: Graph): Persisted {
   return { ...state, graphs: state.graphs.map((item) => (item.id === graph.id ? graph : item)) };
+}
+
+export function resizeNode(
+  state: Persisted,
+  graphId: string,
+  nodeId: string,
+  w: number,
+  h: number,
+): Persisted {
+  const graph = state.graphs.find((item) => item.id === graphId);
+  if (!graph) return state;
+  return replaceGraph(state, {
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.id === nodeId ? { ...node, w: Math.max(140, Math.round(w)), h: Math.max(72, Math.round(h)) } : node,
+    ),
+  });
 }
 
 export function moveNode(state: Persisted, graphId: string, nodeId: string, x: number, y: number): Persisted {
