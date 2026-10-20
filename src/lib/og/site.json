@@ -1,1 +1,7 @@
-{"title":"REAPER","type":"x:game","card":"custom","color":"06080A"}
+{
+  "title": "REAPER",
+  "type": "x:game",
+  "card": "custom",
+  "color": "06080A",
+  "banner": "/x-banner.jpg"
+}
