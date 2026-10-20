@@ -54,13 +54,26 @@
 }
 
 .canvas-grid {
-  background-color: var(--color-canvas);
-  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-bone) 28%, transparent) 1px, transparent 1px);
-  background-size: 18px 18px;
+  background-color: #070707;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-bone) 14%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
 
 .node-face {
   background: var(--color-node);
+}
+
+.node-on {
+  background: #1a0e0a;
+  box-shadow: 0 0 0 1px var(--color-ember), 0 0 32px color-mix(in srgb, var(--color-ember) 50%, transparent);
+}
+
+.node-live {
+  box-shadow: 0 0 0 1px var(--color-ember), 0 0 36px color-mix(in srgb, var(--color-ember) 70%, transparent);
+}
+
+.node-refuse {
+  color: #ff5a6a;
 }
 
 html[data-canvas="clean"] .canvas-grid {

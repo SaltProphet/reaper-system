@@ -44,6 +44,8 @@ export function Workbench() {
   const [bounds, setBounds] = useState({ w: 1280, h: 760 });
   const [frames, setFrames] = useState(DEFAULT_FRAMES);
   const [front, setFront] = useState<PanelId>("editor");
+  const [demo, setDemo] = useState(false);
+  const [marks, setMarks] = useState(false);
   const [look, setLook] = useState<Look | null>(null);
   const [nav, setNav] = useState<"workflow" | "integrations">("workflow");
 
@@ -131,7 +133,11 @@ export function Workbench() {
   }
 
   function toggle(key: keyof typeof panels) {
-    setPanels((prev) => ({ ...prev, [key]: !prev[key] }));
+    setPanels((prev) => {
+      const open = !prev[key];
+      if (open) setFront(key);
+      return { ...prev, [key]: open };
+    });
   }
 
   return (
@@ -139,7 +145,7 @@ export function Workbench() {
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-panel px-4 py-2">
         <div className="flex min-w-0 items-center gap-3">
           <Mark />
-          <h1 className="font-mono text-sm tracking-[0.14em] text-paper">REAPER</h1>
+          <h1 className="font-mono text-base tracking-[0.22em] text-paper">REAPER</h1>
         </div>
         <div className="flex flex-wrap gap-1">
           {(
@@ -169,12 +175,34 @@ export function Workbench() {
             <span className={`size-1.5 rounded-full ${live ? "bg-ember" : "bg-mute"}`} />
             {live ? "Running" : run?.status === "paused" ? "Paused" : run?.status === "failed" ? "Failed" : run?.status === "done" ? "Done" : "Idle"}
           </span>
+          <Ctrl label="Marks" onClick={() => setMarks(true)} />
+          <Ctrl label="Demo" onClick={() => setDemo(true)} />
           <Ctrl label="Run" primary onClick={onRun} disabled={live} />
           <Ctrl label="Step" onClick={onStep} disabled={live} />
           <Ctrl label="Pause" onClick={() => commit(setStatus(state, "paused"))} disabled={!live} />
           <Ctrl label="Resume" onClick={() => commit(setStatus(state, "running"))} disabled={run?.status !== "paused"} />
         </div>
       </header>
+      {marks ? <MarksSheet onClose={() => setMarks(false)} /> : null}
+      {demo ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/95 p-6">
+          <div className="w-full max-w-5xl">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="font-mono text-xs text-mute">Demo</p>
+              <button type="button" onClick={() => setDemo(false)} className="min-h-11 px-3 font-mono text-sm text-bone">
+                ×
+              </button>
+            </div>
+            <video
+              className="w-full border border-line bg-black"
+              src="/reaper-demo-v3.mp4"
+              controls
+              autoPlay
+              playsInline
+            />
+          </div>
+        </div>
+      ) : null}
 
       <div ref={stageRef} className="relative h-[calc(100dvh-4.25rem)]">
         {panels.explorer ? (
@@ -243,6 +271,10 @@ export function Workbench() {
                 graph={graph}
                 selectedId={selectedId}
                 hotId={cursor && run?.stack.at(-1)?.graphId === graph.id ? cursor.id : null}
+                openId={insideId}
+                inner={insideId && insideGraph ? insideGraph.nodes.map((node) => ({ id: node.id, name: node.name })) : []}
+                carried={(run?.artifacts ?? []).filter((item) => item.graphId === graph.id).map((item) => item.nodeId)}
+                refused={notice.toLowerCase().includes("incompatible")}
                 onSelect={(id) => {
                   setSelectedId(id);
                   setDetail({ graphId: graph.id, nodeId: id });
@@ -260,33 +292,6 @@ export function Workbench() {
                   commit(result.state, result.error ?? "");
                 }}
               />
-              {notice ? <p className="mt-2 font-mono text-xs text-ember">{notice}</p> : null}
-              {insideGraph ? (
-                <div className="mt-3 border border-line p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-mono text-sm text-paper">Inside {insideNode?.name}</p>
-                    <button type="button" className="font-mono text-xs text-mute" onClick={() => setInsideId(null)}>
-                      Collapse
-                    </button>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {insideGraph.nodes.map((node) => (
-                      <button
-                        key={node.id}
-                        type="button"
-                        onClick={() => setDetail({ graphId: insideGraph.id, nodeId: node.id })}
-                        className="w-44 border border-line bg-ink p-3 text-left"
-                      >
-                        <span className="block font-mono text-sm text-paper">{node.name}</span>
-                        <span className="mt-1 block font-mono text-xs text-ember">{node.kind}</span>
-                        <span className="mt-2 block font-mono text-xs text-mute">
-                          {node.inputs[0]} → {node.outputs[0]}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </Panel>
           ) : null}
           {panels.log ? (
@@ -421,9 +426,9 @@ function InspectorBody({
                 <li key={impl.id}>
                   <button
                     type="button"
-                    disabled={!fits || current}
+                    disabled={current}
                     onClick={() => onUse(impl.id)}
-                    className="w-full border border-line px-2 py-2 text-left font-mono text-sm disabled:opacity-60"
+                    className={`w-full border px-2 py-2 text-left font-mono text-sm disabled:opacity-60 ${fits ? "border-line" : "border-[#ff5a6a]"}`}
                   >
                     <span className="text-paper">{impl.label}</span>
                     <span className="mt-1 block text-xs text-mute">{fits ? impl.does : "Ports do not match."}</span>
@@ -554,7 +559,7 @@ function Panel({
   return (
     <section
       className="frame absolute flex flex-col overflow-hidden bg-panel"
-      style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h, zIndex: front ? 3 : 1 }}
+      style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h, zIndex: front ? 8 : 1 }}
       onPointerDown={onFront}
     >
       <header
@@ -592,7 +597,7 @@ function Panel({
       </header>
       <div className="min-h-0 flex-1 overflow-auto p-3">{children}</div>
       <span
-        className="absolute right-0 bottom-0 size-4 cursor-nwse-resize border-r border-b border-ember"
+        className="absolute right-0 bottom-0 size-4 cursor-nwse-resize border-r border-b border-line"
         onPointerDown={(event) => {
           event.stopPropagation();
           resize.current = { w: frame.w, h: frame.h, px: event.clientX, py: event.clientY };
@@ -621,12 +626,85 @@ function Panel({
   );
 }
 
+function MarksSheet({ onClose }: { onClose: () => void }) {
+  const items = [
+    ["Mark", "One system inside another."],
+    ["Smoke", "Truth leaves through a gap."],
+    ["Closed", "A report with no opening."],
+    ["Buried", "Evidence under the floor."],
+    ["Stain", "What did not wash off."],
+    ["Filter", "Built out of what failed."],
+  ] as const;
+  return (
+    <div className="fixed inset-0 z-50 overflow-auto bg-ink/95 p-6">
+      <div className="mx-auto max-w-3xl">
+        <div className="mb-4 flex items-center justify-between">
+          <p className="font-mono text-xs text-mute">Marks</p>
+          <button type="button" onClick={onClose} className="min-h-11 px-3 font-mono text-sm text-bone">
+            ×
+          </button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {items.map(([name, line], index) => (
+            <figure key={name} className="border border-line bg-well p-4">
+              <Sigil which={index} />
+              <figcaption className="mt-3 text-center">
+                <span className="block font-mono text-xs text-paper">{name}</span>
+                <span className="mt-1 block font-mono text-xs text-mute">{line}</span>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Sigil({ which }: { which: number }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.4 };
+  return (
+    <svg className="mx-auto text-ember" width="96" height="96" viewBox="0 0 64 64" aria-hidden="true">
+      {which === 0 ? (
+        <>
+          <path {...common} d="M32 6 L54 18 V42 L32 58 L10 42 V18 Z" />
+          <path {...common} d="M32 18 L44 25 V39 L32 46 L20 39 V25 Z" />
+        </>
+      ) : null}
+      {which === 1 ? (
+        <>
+          <path {...common} d="M32 8 L52 20 V40 L32 54 L12 40 V20 Z" />
+          <path {...common} d="M32 22 L42 28 V36" />
+          <path {...common} d="M26 40 L32 44 L40 39" strokeDasharray="1.2 2.4" />
+          <path {...common} d="M44 30 C48 28 50 26 52 22" strokeDasharray="1 2.2" />
+        </>
+      ) : null}
+      {which === 2 ? <path {...common} d="M32 10 L52 22 V42 L32 54 L12 42 V22 Z" /> : null}
+      {which === 3 ? (
+        <>
+          <path {...common} d="M14 28 H50" />
+          <circle {...common} cx="32" cy="42" r="7" />
+        </>
+      ) : null}
+      {which === 4 ? <path {...common} d="M22 32 H42" strokeWidth={1.6} /> : null}
+      {which === 5 ? (
+        <>
+          <path {...common} d="M32 8 L52 20" strokeDasharray="3 2.5" />
+          <path {...common} d="M52 20 V42" strokeDasharray="3 2.5" />
+          <path {...common} d="M52 42 L32 56" strokeDasharray="3 2.5" />
+          <path {...common} d="M32 56 L12 42" strokeDasharray="3 2.5" />
+          <path {...common} d="M12 42 V20" strokeDasharray="3 2.5" />
+          <path {...common} d="M12 20 L32 8" strokeDasharray="3 2.5" />
+        </>
+      ) : null}
+    </svg>
+  );
+}
+
 function Mark() {
   return (
-    <svg className="reaper-mark text-ember" width="36" height="36" viewBox="0 0 32 32" aria-hidden="true">
+    <svg className="reaper-mark text-bone" width="36" height="36" viewBox="0 0 32 32" aria-hidden="true">
       <path d="M16 3 L27 9.5 V20.5 L16 29 L5 20.5 V9.5 Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      <path d="M16 8 V22" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M16 15 L23 21" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M16 8 L22 11.5 V18.5 L16 22 L10 18.5 V11.5 Z" fill="none" stroke="currentColor" strokeWidth="1.4" />
       <path d="M3 7 V3 H7 M25 3 H29 V7 M3 25 V29 H7 M25 29 H29 V25" fill="none" stroke="currentColor" strokeWidth="1.2" />
     </svg>
   );
@@ -695,7 +773,7 @@ function Latest({ run }: { run: Run | null }) {
   if (!last) return null;
   return (
     <div className="mt-4">
-      <p className="font-mono text-xs text-ember">LAST ARTIFACT</p>
+      <p className="font-mono text-xs text-mute">LAST ARTIFACT</p>
       <p className="mt-1 font-mono text-xs text-mute">
         {last.id} · {last.port} · {last.status}
       </p>

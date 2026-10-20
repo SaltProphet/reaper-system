@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Graph, NodeDef } from "@/lib/engine";
+import { IMPLS, type Graph, type NodeDef } from "@/lib/engine";
 
 type View = { x: number; y: number; k: number };
 type Box = { w: number; h: number };
@@ -8,6 +8,10 @@ export function NodeCanvas({
   graph,
   selectedId,
   hotId,
+  openId,
+  inner,
+  carried,
+  refused,
   onSelect,
   onOpen,
   onMove,
@@ -17,6 +21,10 @@ export function NodeCanvas({
   graph: Graph;
   selectedId: string | null;
   hotId: string | null;
+  openId: string | null;
+  inner: { id: string; name: string }[];
+  carried: string[];
+  refused: boolean;
   onSelect: (id: string) => void;
   onOpen: (node: NodeDef) => void;
   onMove: (id: string, x: number, y: number) => void;
@@ -86,12 +94,12 @@ export function NodeCanvas({
       const maxY = Math.max(...graph.nodes.map((node) => (node.y ?? 0) + sizeOf(node.id).h));
       const boundsW = Math.max(1, maxX - minX);
       const boundsH = Math.max(1, maxY - minY);
-      const roomX = (rect.width - boundsW) / 2;
-      const roomY = (rect.height - boundsH) / 2;
+      const pad = 72;
+      const k = Math.min(1.4, Math.max(1, Math.min((rect.width - pad) / boundsW, (rect.height - pad) / boundsH)));
       setViewBoth({
-        k: 1,
-        x: (roomX > 16 ? roomX : 20) - minX,
-        y: (roomY > 16 ? roomY : 20) - minY,
+        k,
+        x: (rect.width - boundsW * k) / 2 - minX * k,
+        y: (rect.height - boundsH * k) / 2 - minY * k,
       });
       return true;
     };
@@ -162,16 +170,18 @@ export function NodeCanvas({
             const y2 = (to.y ?? 0) + sizeOf(to.id).h / 2;
             const midX = (x1 + x2) / 2;
             const midY = (y1 + y2) / 2;
+            const carriedEdge = carried.includes(edge.from);
+            const live = carriedEdge || edge.from === hotId || edge.to === hotId || edge.from === selectedId || edge.to === selectedId;
             return (
               <g key={edge.id}>
                 <path
                   d={`M ${x1} ${y1} C ${x1 + 64} ${y1}, ${x2 - 64} ${y2}, ${x2} ${y2}`}
                   fill="none"
-                  stroke="var(--color-ember)"
-                  strokeWidth="1.6"
+                  stroke={live ? "var(--color-ember)" : "var(--color-line)"}
+                  strokeWidth={live ? "2.4" : "1"}
                 />
-                <text x={midX} y={midY - 8} fill="var(--color-mute)" fontSize="13" fontFamily="IBM Plex Mono, monospace">
-                  {from.outputs[0]}
+                <text x={midX} y={midY - 8} fill={carriedEdge ? "var(--color-ember)" : "var(--color-mute)"} fontSize="12" fontFamily="IBM Plex Mono, monospace">
+                  {carriedEdge ? "record" : from.outputs[0]}
                 </text>
               </g>
             );
@@ -186,17 +196,20 @@ export function NodeCanvas({
             />
           ) : null}
         </svg>
-        {graph.nodes.map((node) => (
+        {graph.nodes.map((node) => {
+          const on = hotId === node.id || selectedId === node.id;
+          const quiet = Boolean(selectedId || hotId) && !on;
+          const impl = IMPLS.find((item) => item.id === node.implId);
+          const opened = openId === node.id && inner.length > 0;
+          return (
           <article
             key={node.id}
             ref={(el) => {
               nodeRefs.current[node.id] = el;
             }}
-            className={`node-face absolute max-w-md border px-4 py-3 select-none ${
+            className={`node-face absolute max-w-md border select-none ${
               node.w ? "overflow-auto" : "w-max"
-            } ${hotId === node.id ? "border-ember" : "border-line"} ${
-              selectedId === node.id ? "outline outline-1 outline-ember" : ""
-            }`}
+            } ${on ? "node-on min-w-56 border-ember px-6 py-5" : "min-w-44 border-line px-4 py-3"} ${hotId === node.id ? "node-live" : ""} ${quiet ? "opacity-20" : ""}`}
             style={{ left: node.x ?? 0, top: node.y ?? 0, width: node.w, height: node.h }}
             onPointerDown={(event) => {
               if ((event.target as HTMLElement).dataset.port) return;
@@ -236,7 +249,7 @@ export function NodeCanvas({
               <span
                 data-port="in"
                 title={node.inputs[0]}
-                className="absolute top-1/2 -left-2 size-3.5 -translate-y-1/2 rounded-full border border-ember bg-ink"
+                className={`absolute top-1/2 -left-2 -translate-y-1/2 rounded-full border bg-ink ${on ? "size-4 border-ember" : "size-3 border-line"}`}
                 onPointerUp={(event) => {
                   event.stopPropagation();
                   if (draft) onConnect(draft.fromId, node.id);
@@ -247,23 +260,35 @@ export function NodeCanvas({
             <span
               data-port="out"
               title={node.outputs[0]}
-              className="absolute top-1/2 -right-2 size-3.5 -translate-y-1/2 rounded-full bg-ember"
+              className={`absolute top-1/2 -right-2 -translate-y-1/2 rounded-full ${on ? "size-4 bg-ember" : "size-3 bg-line"}`}
               onPointerDown={(event) => {
                 event.stopPropagation();
                 setDraft({ fromId: node.id, ...localPoint(event) });
               }}
             />
-            <p className="font-mono text-base text-paper">{node.name}</p>
-            <p className="mt-1 font-mono text-sm text-ember">{node.kind}</p>
+            <p className={`font-mono text-paper ${on ? "text-2xl" : "text-base"}`}>{node.name}</p>
+            <p className={`mt-1 font-mono ${on ? "text-base text-ember" : "text-sm text-mute"}`}>{impl?.label ?? node.kind}</p>
             <p className="mt-3 font-mono text-sm text-mute">
               {node.inputs[0] ?? "start"} → {node.outputs[0]}
             </p>
-            {node.childGraphId ? (
+            {opened ? (
+              <div className="mt-3 grid gap-1">
+                {inner.map((item, index) => (
+                  <div key={item.id} className="flex items-baseline gap-2 border border-line px-2 py-1">
+                    <span className="font-mono text-xs text-ember">{String(index + 1).padStart(2, "0")}</span>
+                    <span className="font-mono text-xs text-paper">{item.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : node.childGraphId ? (
               <p className="mt-2 font-mono text-sm text-bone">Nested workflow</p>
+            ) : null}
+            {refused && selectedId === node.id ? (
+              <p className="node-refuse mt-2 font-mono text-xs">Refused. Ports do not match.</p>
             ) : null}
             <span
               data-resize="true"
-              className="absolute right-0 bottom-0 size-4 cursor-nwse-resize border-r border-b border-ember"
+              className="absolute right-0 bottom-0 size-4 cursor-nwse-resize border-r border-b border-line"
               onPointerDown={(event) => {
                 event.stopPropagation();
                 const box = sizeOf(node.id);
@@ -272,7 +297,8 @@ export function NodeCanvas({
               }}
             />
           </article>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

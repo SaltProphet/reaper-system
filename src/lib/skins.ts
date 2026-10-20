@@ -95,7 +95,7 @@ export const SKINS: Skin[] = [
   },
 ];
 
-const KEY = "reaper-skin-v2";
+const KEY = "reaper-skin-v3";
 
 export type Look = {
   skin: SkinId;
@@ -105,7 +105,7 @@ export type Look = {
 };
 
 export const DEFAULT_LOOK: Look = {
-  skin: "trace",
+  skin: "ember",
   density: "comfortable",
   contrast: "standard",
   canvas: "dotted",
