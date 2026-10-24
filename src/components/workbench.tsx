@@ -32,7 +32,6 @@ export function Workbench() {
   const [state, setState] = useState<Persisted | null>(null);
   const [viewId, setViewId] = useState("workbench");
   const [selectedId, setSelectedId] = useState<string | null>("child");
-  const [pace, setPace] = useState(true);
   const [notice, setNotice] = useState("");
   const [insideId, setInsideId] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ graphId: string; nodeId: string } | null>(null);
@@ -135,12 +134,14 @@ export function Workbench() {
   const live = run?.status === "running";
 
   useEffect(() => {
-    if (!pace || !live) return;
+    if (!live) return;
     const timer = window.setTimeout(() => {
       void advanceRun(false);
     }, PACE_MS);
     return () => window.clearTimeout(timer);
-  }, [pace, live, run?.version, run?.status]);
+  // The timer restarts on every persisted run version and uses that render's run state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, run?.version, run?.status]);
 
   if (!state) {
     return <main className="min-h-dvh bg-ink p-6 font-mono text-sm text-mute">Loading workbench…</main>;
