@@ -38,7 +38,7 @@ jobs:
           retention-days: 1
 
       - name: Expose regenerated lockfile for repository repair
-        run: node -e "process.stdout.write('LOCK_BASE64_BEGIN' + Buffer.from(require('node:fs').readFileSync('package-lock.json')).toString('base64') + 'LOCK_BASE64_END\\n')"
+        run: node -e "const s=Buffer.from(require('node:fs').readFileSync('package-lock.json')).toString('base64'); for(let i=0;i<s.length;i+=12000) console.log('LOCK_CHUNK_'+String(i/12000).padStart(3,'0')+':'+s.slice(i,i+12000))"
 
       - name: Install locked dependencies
         run: npm ci
