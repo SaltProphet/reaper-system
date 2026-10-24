@@ -17,9 +17,17 @@ export type NodeDef = {
   y?: number;
   w?: number;
   h?: number;
+  config?: Record<string, unknown>;
 };
 
-export type Edge = { id: string; from: string; to: string };
+export type Edge = {
+  id: string;
+  from: string;
+  to: string;
+  fromPort?: string;
+  toPort?: string;
+  branch?: boolean;
+};
 
 export type Graph = {
   id: string;
@@ -65,6 +73,12 @@ export type Run = {
   log: LogLine[];
   error?: string;
   updatedAt: string;
+  version?: number;
+  workflowId?: string;
+  workflowVersion?: number;
+  values?: Record<string, unknown>;
+  nodes?: Record<string, unknown>;
+  caps?: { searchCallsLeft: number; sourcePagesLeft: number; modelCallsLeft: number };
 };
 
 export type Objective = {
@@ -92,6 +106,46 @@ export const POLICIES = [
 ];
 
 export const IMPLS: ImplSpec[] = [
+  {
+    id: "builtin.objective",
+    label: "Objective",
+    kind: "human",
+    inputs: [],
+    outputs: ["objective"],
+    does: "Emit the current objective as typed workflow data.",
+  },
+  {
+    id: "builtin.research",
+    label: "Research",
+    kind: "tool",
+    inputs: ["objective"],
+    outputs: ["sources"],
+    does: "Retrieve up to five source records through the configured research provider.",
+  },
+  {
+    id: "builtin.analysis",
+    label: "Analysis",
+    kind: "agent",
+    inputs: ["objective", "sources"],
+    outputs: ["analysis"],
+    does: "Create one structured, source-linked model analysis.",
+  },
+  {
+    id: "builtin.condition",
+    label: "Condition",
+    kind: "tool",
+    inputs: ["analysis"],
+    outputs: ["analysis", "matched"],
+    does: "Choose a deterministic true or false route from a configured rule.",
+  },
+  {
+    id: "builtin.record",
+    label: "Record",
+    kind: "tool",
+    inputs: ["analysis"],
+    outputs: ["record"],
+    does: "Store supported and unsupported claims as a final record.",
+  },
   {
     id: "reaper.decision-deck",
     label: "Decision Deck",
@@ -215,19 +269,83 @@ export function connectNodes(
   if (!graph || !from || !to) return { state, error: "Missing module." };
   if (from.id === to.id) return { state, error: "A module cannot wire to itself." };
   const port = from.outputs[0];
-  if (!port || (to.inputs.length > 0 && !to.inputs.includes(port))) {
+  const controlEdge = from.implId === "builtin.condition";
+  if (!port || (!controlEdge && to.inputs.length > 0 && !to.inputs.includes(port))) {
     return { state, error: `${from.name} output [${port ?? "none"}] does not match ${to.name}.` };
   }
   if (graph.edges?.some((edge) => edge.from === from.id && edge.to === to.id)) {
     return { state, error: "That wire already exists." };
   }
-  const edges = [...(graph.edges ?? []), { id: `${from.id}>${to.id}`, from: from.id, to: to.id }];
+  const outgoing = (graph.edges ?? []).filter((edge) => edge.from === from.id);
+  if (from.implId === "builtin.condition" && outgoing.length >= 2) {
+    return { state, error: "A condition supports one true route and one false route." };
+  }
+  const branch = from.implId === "builtin.condition" ? outgoing.length === 0 : undefined;
+  const edges = [
+    ...(graph.edges ?? []),
+    {
+      id: `${from.id}>${to.id}`,
+      from: from.id,
+      to: to.id,
+      fromPort: from.outputs[0],
+      toPort: controlEdge && !to.inputs.includes(from.outputs[0] ?? "")
+        ? "__control"
+        : to.inputs.includes(from.outputs[0] ?? "") ? from.outputs[0] : to.inputs[0],
+      branch,
+    },
+  ];
   if (!orderedNodes({ ...graph, edges })) {
     return { state, error: "Wire rejected. It would cycle." };
   }
   return {
     state: appendLog(replaceGraph(state, { ...graph, edges }), "system", `Wired ${from.name} → ${to.name} on ${port}.`),
   };
+}
+
+export function addNode(state: Persisted, graphId: string, implId: string): Persisted {
+  const impl = IMPLS.find((item) => item.id === implId && item.id.startsWith("builtin."));
+  const graph = state.graphs.find((item) => item.id === graphId);
+  if (!impl || !graph) return state;
+  const ordinal = graph.nodes.filter((node) => node.implId === implId).length + 1;
+  const id = `${implId.split(".").at(-1)}-${Date.now().toString(36)}`;
+  const node: NodeDef = {
+    id,
+    name: ordinal === 1 ? impl.label : `${impl.label} ${ordinal}`,
+    kind: impl.kind,
+    implId: impl.id,
+    inputs: [...impl.inputs],
+    outputs: [...impl.outputs],
+    config: impl.id === "builtin.condition"
+      ? { path: "claims.0.supported", operator: "equals", value: true }
+      : {},
+    x: 48 + (graph.nodes.length % 3) * 240,
+    y: 72 + Math.floor(graph.nodes.length / 3) * 160,
+  };
+  return replaceGraph(state, { ...graph, nodes: [...graph.nodes, node] });
+}
+
+export function removeNode(state: Persisted, graphId: string, nodeId: string): Persisted {
+  const graph = state.graphs.find((item) => item.id === graphId);
+  if (!graph) return state;
+  return replaceGraph(state, {
+    ...graph,
+    nodes: graph.nodes.filter((node) => node.id !== nodeId),
+    edges: (graph.edges ?? []).filter((edge) => edge.from !== nodeId && edge.to !== nodeId),
+  });
+}
+
+export function configureNode(
+  state: Persisted,
+  graphId: string,
+  nodeId: string,
+  patch: { name?: string; config?: Record<string, unknown> },
+): Persisted {
+  const graph = state.graphs.find((item) => item.id === graphId);
+  if (!graph) return state;
+  return replaceGraph(state, {
+    ...graph,
+    nodes: graph.nodes.map((node) => node.id === nodeId ? { ...node, ...patch } : node),
+  });
 }
 
 export function cutIncoming(state: Persisted, graphId: string, nodeId: string): Persisted {
@@ -263,7 +381,7 @@ export function defaultState(): Persisted {
             id: "objective",
             name: "Objective",
             kind: "human",
-            implId: "human.objective",
+            implId: "builtin.objective",
             inputs: [],
             outputs: ["objective"],
           },
@@ -271,53 +389,75 @@ export function defaultState(): Persisted {
             id: "research",
             name: "Research",
             kind: "tool",
-            implId: "tool.research",
+            implId: "builtin.research",
             inputs: ["objective"],
             outputs: ["sources"],
           },
           {
             id: "child",
-            name: "Child REAPER",
-            kind: "framework",
-            implId: "reaper.decision-deck",
-            inputs: ["sources"],
-            outputs: ["record"],
-            childGraphId: "decision-deck",
+            name: "Analysis",
+            kind: "agent",
+            implId: "builtin.analysis",
+            inputs: ["objective", "sources"],
+            outputs: ["analysis"],
           },
           {
             id: "results",
-            name: "Results",
-            kind: "agent",
-            implId: "agent.results",
-            inputs: ["record"],
-            outputs: ["report"],
+            name: "Record",
+            kind: "tool",
+            implId: "builtin.record",
+            inputs: ["analysis"],
+            outputs: ["record"],
           },
         ],
-      }),
-      layoutGraph({
-        id: "decision-deck",
-        name: "Decision Deck",
-        nodes: [
-          ["research", "Research", "tool"],
-          ["evidence", "Evidence", "tool"],
-          ["analysis", "Analysis", "agent"],
-          ["prioritization", "Prioritization", "agent"],
-          ["execution", "Execution", "human"],
-          ["recordkeeping", "Recordkeeping", "tool"],
-        ].map(([id, name, kind]) => ({
-          id,
-          name,
-          kind: kind as Kind,
-          implId: `stage.${id}`,
-          inputs: ["packet"],
-          outputs: ["packet"],
-        })),
       }),
     ],
     runs: [],
     activeRunId: null,
     layout: LAYOUT,
   };
+}
+
+export function upgradeLegacyGraphs(graphs: Graph[]): Graph[] {
+  const upgraded = graphs.map((graph) => ({
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.implId === "human.objective") return { ...node, implId: "builtin.objective" };
+      if (node.implId === "tool.research") return { ...node, implId: "builtin.research" };
+      if (node.implId === "reaper.decision-deck") {
+        return {
+          ...node,
+          name: "Analysis",
+          kind: "agent" as const,
+          implId: "builtin.analysis",
+          inputs: ["objective", "sources"],
+          outputs: ["analysis"],
+          childGraphId: undefined,
+        };
+      }
+      if (node.implId === "agent.results") {
+        return {
+          ...node,
+          name: "Record",
+          kind: "tool" as const,
+          implId: "builtin.record",
+          inputs: ["analysis"],
+          outputs: ["record"],
+        };
+      }
+      return node;
+    }),
+  }));
+  const reachable = new Set<string>();
+  const visit = (id: string) => {
+    if (reachable.has(id)) return;
+    reachable.add(id);
+    upgraded.find((graph) => graph.id === id)?.nodes.forEach((node) => {
+      if (node.childGraphId) visit(node.childGraphId);
+    });
+  };
+  if (upgraded[0]) visit(upgraded[0].id);
+  return upgraded.filter((graph) => reachable.has(graph.id));
 }
 
 export function loadState(): Persisted {
@@ -457,68 +597,17 @@ export function setStatus(state: Persisted, status: Run["status"]): Persisted {
   });
 }
 
-function bodyFor(node: NodeDef, objective: Objective, prior: Artifact[]): { body: string; status: EvidenceStatus } {
-  if (node.implId === "human.objective") {
+function bodyFor(node: NodeDef, objective: Objective, _prior: Artifact[]): { body: string; status: EvidenceStatus } {
+  if (node.implId === "human.objective" || node.implId === "builtin.objective") {
     return {
       status: "present",
       body: `Goal: ${objective.goal}\nConstraints: ${objective.constraints}\nDone when: ${objective.doneWhen}`,
     };
   }
-  if (node.implId === "tool.research") {
-    return {
-      status: "present",
-      body: "SRC-001 ownership gap in broken automations.\nSRC-002 real-name blunt posting is possible on X.\nSRC-003 audience size: missing.",
-    };
-  }
-  if (node.implId === "reaper.compact") {
-    return {
-      status: "present",
-      body: "Compact implementation. Same ports as Decision Deck.\nPrimary: one diagnosis post. Nothing posted.\nParent graph was not edited.",
-    };
-  }
-  if (node.implId === "agent.results") {
-    const record = [...prior].reverse().find((item) => item.port === "record" || item.nodeId === "recordkeeping");
-    return {
-      status: record ? "present" : "missing",
-      body: record
-        ? `Report bound to ${record.id}.\n${record.body.split("\n")[0]}`
-        : "No record artifact. Report withheld.",
-    };
-  }
-  if (node.implId === "stage.research") {
-    return { status: "present", body: "Sources accepted from parent. Pattern: ownership_gap." };
-  }
-  if (node.implId === "stage.evidence") {
-    return {
-      status: "present",
-      body: "EV-001 present. EV-002 present. EV-003 audience size missing.",
-    };
-  }
-  if (node.implId === "stage.analysis") {
-    return {
-      status: "present",
-      body: "Hypothesis only: workflow rescue is a credible known-for. Not a factual market claim.",
-    };
-  }
-  if (node.implId === "stage.prioritization") {
-    return {
-      status: "present",
-      body: "Rank 1: one public diagnosis post.\nKilled: LinkedIn, daily cadence.",
-    };
-  }
-  if (node.implId === "stage.execution") {
-    return {
-      status: "present",
-      body: "Recommendation only. Engine did not post.",
-    };
-  }
-  if (node.implId === "stage.recordkeeping") {
-    return {
-      status: "present",
-      body: "Record written. Evidence used: EV-001, EV-002. Next cycle needs a post URL.",
-    };
-  }
-  return { status: "missing", body: `No executor for ${node.implId}.` };
+  return {
+    status: "missing",
+    body: `Client-side execution is disabled for ${node.implId}. Use the authenticated server runtime.`,
+  };
 }
 
 export function stepRun(state: Persisted): Persisted {
@@ -647,3 +736,4 @@ export function currentNode(state: Persisted) {
   const order = graph ? orderedNodes(graph) : null;
   return order?.[frame.index] ?? null;
 }
+
