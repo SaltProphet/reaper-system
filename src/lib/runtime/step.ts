@@ -176,7 +176,7 @@ export async function stepRuntime(
   current: RuntimeRun,
   dependencies: RuntimeDependencies,
 ): Promise<RuntimeRun> {
-  let run = { ...current, status: "running" as const, error: undefined };
+  const run = { ...current, status: "running" as const, error: undefined };
   if (run.budgetLeft <= 0) return fail(run, "Step budget exhausted.");
   const frame = run.stack.at(-1);
   if (!frame) return { ...run, status: "done", updatedAt: iso() };
