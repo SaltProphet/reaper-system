@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   IMPLS,
   POLICIES,
+  addNode,
+  configureNode,
   connectNodes,
   currentNode,
   cutIncoming,
@@ -9,11 +11,10 @@ import {
   moveNode,
   portsMatch,
   resizeNode,
+  removeNode,
   saveState,
-  setStatus,
-  startRun,
-  stepRun,
   swapImpl,
+  upgradeLegacyGraphs,
   type NodeDef,
   type Persisted,
   type Run,
@@ -21,6 +22,9 @@ import {
 import { NodeCanvas } from "@/components/node-canvas";
 import { SkinGallery } from "@/components/skin-gallery";
 import { applyLook, loadLook, saveLook, type Look } from "@/lib/skins";
+import { beginRun, changeRunStatus, createServerWorkflow, importLocalWorkflow, loadWorkspace, persistWorkflow, stepServerRun } from "@/lib/runtime/api";
+import type { RuntimeRun, StoredWorkflow, WorkflowDefinition } from "@/lib/runtime/types";
+import { UserButton } from "@/lib/auth/gates";
 
 const PACE_MS = 700;
 
@@ -48,12 +52,54 @@ export function Workbench() {
   const [marks, setMarks] = useState(false);
   const [look, setLook] = useState<Look | null>(null);
   const [nav, setNav] = useState<"workflow" | "integrations">("workflow");
+  const [workflow, setWorkflow] = useState<StoredWorkflow | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [legacyRuns, setLegacyRuns] = useState<Run[]>([]);
 
   useEffect(() => {
-    setState(loadState());
+    const local = loadState();
+    const savedLegacy = window.localStorage.getItem("reaper-legacy-demo-runs-v1");
+    let demos = local.runs;
+    try {
+      if (savedLegacy) demos = JSON.parse(savedLegacy) as Run[];
+    } catch {
+      demos = local.runs;
+    }
+    if (demos.length > 0) {
+      setLegacyRuns(demos);
+      window.localStorage.setItem("reaper-legacy-demo-runs-v1", JSON.stringify(demos));
+    }
     const next = loadLook();
     setLook(next);
     applyLook(next);
+    void loadWorkspace()
+      .then(({ workflows, runs }) => {
+        const stored = workflows[0];
+        if (!stored) throw new Error("No workflow was available.");
+        setWorkflow(stored);
+        setState({
+          objective: stored.definition.objective,
+          graphs: stored.definition.graphs,
+          runs: runs as Run[],
+          activeRunId: runs[0]?.id ?? null,
+          layout: 2,
+        });
+        if (window.localStorage.getItem("reaper-workbench-v1") && !window.localStorage.getItem("reaper-server-import-v1")) {
+          const definition: WorkflowDefinition = { schemaVersion: 1, objective: local.objective, graphs: upgradeLegacyGraphs(local.graphs) };
+          void importLocalWorkflow({ data: definition })
+            .then((saved) => {
+              setWorkflow(saved);
+              setState((current) => current ? { ...current, objective: saved.definition.objective, graphs: saved.definition.graphs } : current);
+              window.localStorage.setItem("reaper-server-import-v1", "done");
+            })
+            .catch((error) => setNotice(error instanceof Error ? error.message : "Local workflow import failed."));
+        }
+      })
+      .catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Unable to load private workspace.");
+        setState(local);
+      });
   }, []);
 
   useEffect(() => {
@@ -91,10 +137,10 @@ export function Workbench() {
   useEffect(() => {
     if (!pace || !live) return;
     const timer = window.setTimeout(() => {
-      setState((prev) => (prev ? stepRun(prev) : prev));
+      void advanceRun(false);
     }, PACE_MS);
     return () => window.clearTimeout(timer);
-  }, [pace, live, run?.log.length, run?.status]);
+  }, [pace, live, run?.version, run?.status]);
 
   if (!state) {
     return <main className="min-h-dvh bg-ink p-6 font-mono text-sm text-mute">Loading workbench…</main>;
@@ -116,20 +162,118 @@ export function Workbench() {
 
   function commit(next: Persisted, note = "") {
     setState(next);
+    setDirty(true);
     if (note) setNotice(note);
   }
 
-  function onRun() {
-    commit(startRun(model, viewId));
-    setNotice("");
+  function replaceRemoteRun(next: RuntimeRun) {
+    setState((current) => current ? {
+      ...current,
+      activeRunId: next.id,
+      runs: [next as Run, ...current.runs.filter((item) => item.id !== next.id)].slice(0, 20),
+    } : current);
   }
 
-  function onStep() {
-    const base =
-      run && run.status !== "done" && run.status !== "failed" ? model : startRun(model, viewId);
-    const stepped = stepRun(base);
-    const current = stepped.runs.find((item) => item.id === stepped.activeRunId);
-    commit(current?.status === "running" ? setStatus(stepped, "paused") : stepped);
+  async function saveCurrentWorkflow(): Promise<StoredWorkflow> {
+    if (!workflow) throw new Error("Workflow is still loading.");
+    if (!dirty) return workflow;
+    const definition: WorkflowDefinition = { schemaVersion: 1, objective: model.objective, graphs: model.graphs };
+    const saved = await persistWorkflow({ data: {
+      id: workflow.id,
+      name: workflow.name,
+      expectedVersion: workflow.version,
+      definition,
+    } });
+    setWorkflow(saved);
+    setDirty(false);
+    return saved;
+  }
+
+  async function onSave() {
+    setBusy(true);
+    setNotice("");
+    try {
+      await saveCurrentWorkflow();
+      setNotice("Workflow saved.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Workflow save failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRun() {
+    setBusy(true);
+    setNotice("");
+    try {
+      const saved = await saveCurrentWorkflow();
+      const created = await beginRun({ data: saved.id });
+      const started = await changeRunStatus({ data: { runId: created.id, expectedVersion: created.version, status: "running" } });
+      replaceRemoteRun(started);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Run could not start.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onNewWorkflow() {
+    setBusy(true);
+    setNotice("");
+    try {
+      const created = await createServerWorkflow({ data: "Untitled workflow" });
+      setWorkflow(created);
+      setDirty(false);
+      setViewId(created.definition.graphs[0]?.id ?? "workbench");
+      setState({
+        objective: created.definition.objective,
+        graphs: created.definition.graphs,
+        runs: [],
+        activeRunId: null,
+        layout: 2,
+      });
+      setNotice("New private workflow created.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Workflow could not be created.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function advanceRun(pauseAfter: boolean) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      let active = run as RuntimeRun | null;
+      if (!active || active.status === "done" || active.status === "failed") {
+        const saved = await saveCurrentWorkflow();
+        active = await beginRun({ data: saved.id });
+      }
+      if (!active) throw new Error("Run could not be created.");
+      let next = await stepServerRun({ data: { runId: active.id, expectedVersion: active.version ?? 1 } });
+      if (pauseAfter && next.status === "running") {
+        next = await changeRunStatus({ data: { runId: next.id, expectedVersion: next.version, status: "paused" } });
+      }
+      replaceRemoteRun(next);
+      setNotice("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Run step failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onStatus(status: "paused" | "running") {
+    if (!run || run.status === "done" || run.status === "failed") return;
+    setBusy(true);
+    try {
+      const next = await changeRunStatus({ data: { runId: run.id, expectedVersion: run.version ?? 1, status } });
+      replaceRemoteRun(next);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Run status change failed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function toggle(key: keyof typeof panels) {
@@ -177,10 +321,12 @@ export function Workbench() {
           </span>
           <Ctrl label="Marks" onClick={() => setMarks(true)} />
           <Ctrl label="Demo" onClick={() => setDemo(true)} />
-          <Ctrl label="Run" primary onClick={onRun} disabled={live} />
-          <Ctrl label="Step" onClick={onStep} disabled={live} />
-          <Ctrl label="Pause" onClick={() => commit(setStatus(state, "paused"))} disabled={!live} />
-          <Ctrl label="Resume" onClick={() => commit(setStatus(state, "running"))} disabled={run?.status !== "paused"} />
+          <Ctrl label={dirty ? "Save *" : "Save"} onClick={() => void onSave()} disabled={busy || !dirty} />
+          <Ctrl label="Run" primary onClick={() => void onRun()} disabled={live || busy} />
+          <Ctrl label="Step" onClick={() => void advanceRun(true)} disabled={live || busy} />
+          <Ctrl label="Pause" onClick={() => void onStatus("paused")} disabled={!live || busy} />
+          <Ctrl label="Resume" onClick={() => void onStatus("running")} disabled={run?.status !== "paused" || busy} />
+          <UserButton />
         </div>
       </header>
       {marks ? <MarksSheet onClose={() => setMarks(false)} /> : null}
@@ -212,8 +358,25 @@ export function Workbench() {
               <ExplorerButton label="Integrations" onClick={() => setNav("integrations")} />
             </ul>
             {nav === "integrations" ? (
-              <ul className="mt-4 space-y-1">
-                {graph.nodes.map((node) => (
+              <div className="mt-4 space-y-4">
+                <section>
+                  <h3 className="font-mono text-xs text-mute">Built-in catalog</h3>
+                  <ul className="mt-2 space-y-1">
+                    {IMPLS.filter((impl) => impl.id.startsWith("builtin.")).map((impl) => (
+                      <li key={impl.id}>
+                        <button
+                          type="button"
+                          className="min-h-11 w-full border border-line px-2 text-left font-mono text-xs text-paper hover:border-ember"
+                          onClick={() => commit(addNode(model, graph.id, impl.id), `${impl.label} added.`)}
+                        >
+                          + {impl.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <ul className="space-y-1">
+                  {graph.nodes.map((node) => (
                   <li key={node.id}>
                     <button
                       type="button"
@@ -226,10 +389,33 @@ export function Workbench() {
                       {node.name}
                     </button>
                   </li>
-                ))}
-              </ul>
+                  ))}
+                </ul>
+              </div>
             ) : (
-              <ul className="mt-4 space-y-1">
+              <div className="mt-4 space-y-3">
+                <button
+                  type="button"
+                  className="min-h-11 w-full border border-line px-2 text-left font-mono text-xs text-paper hover:border-ember"
+                  onClick={() => void onNewWorkflow()}
+                  disabled={busy}
+                >
+                  + New workflow
+                </button>
+                {workflow ? (
+                  <label className="block font-mono text-xs text-mute">
+                    Workflow name
+                    <input
+                      value={workflow.name}
+                      onChange={(event) => {
+                        setWorkflow({ ...workflow, name: event.target.value });
+                        setDirty(true);
+                      }}
+                      className="mt-1 min-h-11 w-full border border-line bg-well px-2 text-paper outline-none focus:border-ember"
+                    />
+                  </label>
+                ) : null}
+                <ul className="space-y-1">
                 {state.runs.map((item) => (
                   <li key={item.id}>
                     <button
@@ -241,7 +427,16 @@ export function Workbench() {
                     </button>
                   </li>
                 ))}
-              </ul>
+                {legacyRuns.length > 0 ? (
+                  <li className="pt-3 font-mono text-xs text-mute">DEMONSTRATION HISTORY — LOCAL ONLY</li>
+                ) : null}
+                {legacyRuns.map((item) => (
+                  <li key={`demo-${item.id}`} className="border border-line px-2 py-2 font-mono text-xs text-mute">
+                    [DEMO] {item.id} · {item.status}
+                  </li>
+                ))}
+                </ul>
+              </div>
             )}
           </Panel>
         ) : (
@@ -285,8 +480,8 @@ export function Workbench() {
                   setSelectedId(node.id);
                   setDetail({ graphId: graph.id, nodeId: node.id });
                 }}
-                onMove={(id, x, y) => setState(moveNode(model, graph.id, id, x, y))}
-                onResize={(id, w, h) => setState(resizeNode(model, graph.id, id, w, h))}
+                onMove={(id, x, y) => commit(moveNode(model, graph.id, id, x, y))}
+                onResize={(id, w, h) => commit(resizeNode(model, graph.id, id, w, h))}
                 onConnect={(fromId, toId) => {
                   const result = connectNodes(model, graph.id, fromId, toId);
                   commit(result.state, result.error ?? "");
@@ -342,6 +537,12 @@ export function Workbench() {
                     if (detailNode.childGraphId) setViewId(detailNode.childGraphId);
                   }}
                   onCut={() => commit(cutIncoming(model, graph.id, detailNode.id))}
+                  onConfigure={(patch) => commit(configureNode(model, detailGraph.id, detailNode.id, patch))}
+                  onRemove={() => {
+                    commit(removeNode(model, detailGraph.id, detailNode.id), `${detailNode.name} removed.`);
+                    setSelectedId(null);
+                    setDetail(null);
+                  }}
                 />
               ) : (
                 <p className="font-mono text-sm text-mute">Select a module.</p>
@@ -389,6 +590,8 @@ function InspectorBody({
   onUse,
   onEnter,
   onCut,
+  onConfigure,
+  onRemove,
 }: {
   node: NodeDef;
   graphName: string;
@@ -397,6 +600,8 @@ function InspectorBody({
   onUse: (implId: string) => void;
   onEnter: () => void;
   onCut: () => void;
+  onConfigure: (patch: { name?: string; config?: Record<string, unknown> }) => void;
+  onRemove: () => void;
 }) {
   const choices = IMPLS.filter((impl) => impl.kind === node.kind);
   return (
@@ -441,6 +646,43 @@ function InspectorBody({
           <p className="mt-2 font-mono text-sm text-mute">No other implementation shares this contract.</p>
         )}
       </section>
+      <section>
+        <h3 className="font-mono text-xs text-mute">Configuration</h3>
+        <label className="mt-2 block font-mono text-xs text-mute">
+          Name
+          <input
+            value={node.name}
+            onChange={(event) => onConfigure({ name: event.target.value })}
+            className="mt-1 min-h-11 w-full border border-line bg-well px-2 text-sm text-paper outline-none focus:border-ember"
+          />
+        </label>
+        {node.implId === "builtin.condition" ? (
+          <>
+            <label className="mt-2 block font-mono text-xs text-mute">
+              Value path
+              <input
+                value={String(node.config?.path ?? "claims.0.supported")}
+                onChange={(event) => onConfigure({ config: { ...node.config, path: event.target.value } })}
+                className="mt-1 min-h-11 w-full border border-line bg-well px-2 text-sm text-paper outline-none focus:border-ember"
+              />
+            </label>
+            <label className="mt-2 block font-mono text-xs text-mute">
+              Expected value
+              <select
+                value={String(node.config?.value ?? true)}
+                onChange={(event) => onConfigure({ config: { ...node.config, operator: "equals", value: event.target.value === "true" } })}
+                className="mt-1 min-h-11 w-full border border-line bg-well px-2 text-sm text-paper outline-none focus:border-ember"
+              >
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <p className="mt-2 font-mono text-xs text-mute">First outgoing wire is true; second is false. The selected wire carries the analysis value.</p>
+          </>
+        ) : (
+          <p className="mt-2 font-mono text-xs text-mute">This built-in has no user-editable provider settings.</p>
+        )}
+      </section>
       {node.childGraphId ? (
         <section>
           <h3 className="font-mono text-xs text-mute">Inside</h3>
@@ -461,6 +703,9 @@ function InspectorBody({
         </ul>
         <button type="button" onClick={onCut} className="mt-3 font-mono text-sm text-mute">
           Cut incoming
+        </button>
+        <button type="button" onClick={onRemove} className="mt-3 ml-4 font-mono text-sm text-ember">
+          Remove module
         </button>
       </section>
     </div>
@@ -785,3 +1030,4 @@ function Latest({ run }: { run: Run | null }) {
     </div>
   );
 }
+
