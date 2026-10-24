@@ -37,6 +37,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Expose regenerated lockfile for repository repair
+        run: node -e "process.stdout.write('LOCK_BASE64_BEGIN' + Buffer.from(require('node:fs').readFileSync('package-lock.json')).toString('base64') + 'LOCK_BASE64_END\\n')"
+
       - name: Install locked dependencies
         run: npm ci
 

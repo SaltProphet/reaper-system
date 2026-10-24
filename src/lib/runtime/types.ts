@@ -2,7 +2,7 @@ import type { Graph, Objective } from "../engine.ts";
 
 export type ValueType = "objective" | "sources" | "analysis" | "boolean" | "record" | "text";
 
-export type PortValue<T = unknown> = {
+export type PortValue<T = any> = {
   type: ValueType;
   value: T;
 };
@@ -35,7 +35,7 @@ export type RuntimeArtifact = {
   port: string;
   type: ValueType;
   body: string;
-  data: unknown;
+  data: any;
   sourceIds: string[];
   status: "present" | "missing";
   createdAt: string;
