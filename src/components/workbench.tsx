@@ -19,7 +19,8 @@ import {
   type Persisted,
   type Run,
 } from "@/lib/engine";
-import { NodeCanvas } from "@/components/node-canvas";
+import { ReaperFlowCanvas } from "@/components/reaper-flow-canvas";
+import { removeEdge } from "@/lib/canvas-edges";
 import { SkinGallery } from "@/components/skin-gallery";
 import { applyLook, loadLook, saveLook, type Look } from "@/lib/skins";
 import { beginRun, changeRunStatus, createServerWorkflow, importLocalWorkflow, loadWorkspace, persistWorkflow, stepServerRun } from "@/lib/runtime/api";
@@ -463,31 +464,30 @@ export function Workbench() {
                 ) : null
               }
             >
-              <NodeCanvas
-                graph={graph}
-                selectedId={selectedId}
-                hotId={cursor && run?.stack.at(-1)?.graphId === graph.id ? cursor.id : null}
-                openId={insideId}
-                inner={insideId && insideGraph ? insideGraph.nodes.map((node) => ({ id: node.id, name: node.name })) : []}
-                carried={(run?.artifacts ?? []).filter((item) => item.graphId === graph.id).map((item) => item.nodeId)}
-                refused={notice.toLowerCase().includes("incompatible")}
-                onSelect={(id) => {
-                  setSelectedId(id);
-                  setDetail({ graphId: graph.id, nodeId: id });
-                }}
-                onOpen={(node) => {
-                  if (!node.childGraphId) return;
-                  setInsideId((current) => (current === node.id ? null : node.id));
-                  setSelectedId(node.id);
-                  setDetail({ graphId: graph.id, nodeId: node.id });
-                }}
-                onMove={(id, x, y) => commit(moveNode(model, graph.id, id, x, y))}
-                onResize={(id, w, h) => commit(resizeNode(model, graph.id, id, w, h))}
-                onConnect={(fromId, toId) => {
-                  const result = connectNodes(model, graph.id, fromId, toId);
-                  commit(result.state, result.error ?? "");
-                }}
-              />
+              <div style={{ height: 560 }}>
+                <ReaperFlowCanvas
+                  graph={graph}
+                  selectedId={selectedId}
+                  hotId={cursor && run?.stack.at(-1)?.graphId === graph.id ? cursor.id : null}
+                  run={run}
+                  onSelect={(id) => {
+                    setSelectedId(id);
+                    setDetail({ graphId: graph.id, nodeId: id });
+                  }}
+                  onOpen={(node) => {
+                    if (!node.childGraphId) return;
+                    setInsideId((current) => (current === node.id ? null : node.id));
+                    setSelectedId(node.id);
+                    setDetail({ graphId: graph.id, nodeId: node.id });
+                  }}
+                  onMove={(id, x, y) => commit(moveNode(model, graph.id, id, x, y))}
+                  onConnect={(fromId, toId) => {
+                    const result = connectNodes(model, graph.id, fromId, toId);
+                    commit(result.state, result.error ?? "");
+                  }}
+                  onDeleteEdge={(edgeId) => commit(removeEdge(model, graph.id, edgeId))}
+                />
+              </div>
             </Panel>
           ) : null}
           {panels.log ? (
