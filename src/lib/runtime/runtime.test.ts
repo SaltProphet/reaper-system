@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
 import { EXECUTORS, getExecutor } from "./registry.ts";
 import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./step.ts";
-import { createProviderDependencies } from "./providers.server.ts";
+import { createProviderDependencies, modelConfig, REAPER_ANALYSIS_SCHEMA } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 
 const source = {
@@ -238,7 +239,7 @@ test("normalizes mocked Firecrawl results and parses OpenAI structured output", 
     assert.equal(sources[0].id, "SRC-001");
     const result = await providers.analyze(workflow(defaultState().graphs[0]).objective, sources);
     assert.equal(result.summary, "Structured");
-    assert.equal(result.model, "gpt-5.4-mini");
+    assert.equal(result.model, "gpt-oss:20b");
   } finally {
     globalThis.fetch = oldFetch;
     delete process.env.FIRECRAWL_API_KEY;
@@ -265,4 +266,60 @@ test("provider adapters fail visibly for missing credentials, empty results, and
   globalThis.fetch = oldFetch;
   delete process.env.FIRECRAWL_API_KEY;
   delete process.env.OPENAI_API_KEY;
+});
+
+async function withEnv(vars: Record<string, string | undefined>, fn: () => unknown): Promise<void> {
+  const old: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(vars)) {
+    old[key] = process.env[key];
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of Object.entries(old)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
+
+test("model config defaults to local Ollama with no key", () => withEnv(
+  { OPENAI_BASE_URL: undefined, OPENAI_API_KEY: undefined, OPENAI_MODEL: undefined, REAPER_MODEL_TIMEOUT_MS: undefined },
+  () => assert.deepEqual(modelConfig(), { baseUrl: "http://127.0.0.1:11434/v1", apiKey: undefined, model: "gpt-oss:20b", timeoutMs: 600_000 }),
+));
+
+test("model config requires a key only for api.openai.com and validates the timeout", () => withEnv(
+  { OPENAI_BASE_URL: "https://api.openai.com/v1/", OPENAI_API_KEY: undefined, REAPER_MODEL_TIMEOUT_MS: undefined },
+  () => {
+    assert.throws(() => modelConfig(), /OPENAI_API_KEY/);
+    process.env.OPENAI_API_KEY = "k";
+    assert.equal(modelConfig().baseUrl, "https://api.openai.com/v1");
+    process.env.REAPER_MODEL_TIMEOUT_MS = "abc";
+    assert.throws(() => modelConfig(), /REAPER_MODEL_TIMEOUT_MS/);
+  },
+));
+
+test("analysis posts to the configured base URL without an Authorization header when no key is set", async () => {
+  const oldFetch = globalThis.fetch;
+  const seen: { url: string; headers: Record<string, string>; body: any }[] = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    seen.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) });
+    return new Response(JSON.stringify({ output_text: JSON.stringify({ summary: "s", claims: [], limitations: [] }) }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    await withEnv({ OPENAI_BASE_URL: "http://127.0.0.1:11434/v1", OPENAI_API_KEY: undefined, OPENAI_MODEL: "gpt-oss-20b-32k" }, async () => {
+      const result = await createProviderDependencies().analyze(workflow(defaultState().graphs[0]).objective, [source]);
+      assert.equal(result.model, "gpt-oss-20b-32k");
+    });
+    assert.equal(seen[0].url, "http://127.0.0.1:11434/v1/responses");
+    assert.equal("Authorization" in seen[0].headers, false);
+    assert.equal(seen[0].body.text.format.strict, true);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("the code schema is exactly the schema in the recorded fixture request", () => {
+  const request = JSON.parse(readFileSync(new URL("./fixtures/ollama-responses-request.json", import.meta.url), "utf8"));
+  assert.deepEqual(request.text.format.schema, REAPER_ANALYSIS_SCHEMA);
 });

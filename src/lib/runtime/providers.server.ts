@@ -1,6 +1,50 @@
 import { env } from "../env.server.ts";
 import type { RuntimeDependencies, SourceRecord } from "./types.ts";
 
+export const DEFAULT_MODEL_BASE_URL = "http://127.0.0.1:11434/v1";
+export const DEFAULT_MODEL = "gpt-oss:20b";
+export const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
+export const ANALYSIS_INSTRUCTIONS =
+  "Analyze only the supplied source records. Every factual claim must cite one or more supplied source IDs. Put uncertainty and missing evidence in limitations. Do not invent IDs or facts.";
+export const REAPER_ANALYSIS_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "claims", "limitations"],
+  properties: {
+    summary: { type: "string" },
+    claims: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "sourceIds"],
+        properties: { text: { type: "string" }, sourceIds: { type: "array", items: { type: "string" } } },
+      },
+    },
+    limitations: { type: "array", items: { type: "string" } },
+  },
+};
+
+export type ModelConfig = { baseUrl: string; apiKey?: string; model: string; timeoutMs: number };
+
+export function modelConfig(): ModelConfig {
+  const baseUrl = (env("OPENAI_BASE_URL") ?? DEFAULT_MODEL_BASE_URL).replace(/\/+$/, "");
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    throw new Error(`OPENAI_BASE_URL is not a valid URL: ${baseUrl}`);
+  }
+  const apiKey = env("OPENAI_API_KEY");
+  if (host === "api.openai.com" && !apiKey) throw new Error("OPENAI_API_KEY is not configured.");
+  const rawTimeout = env("REAPER_MODEL_TIMEOUT_MS");
+  const timeoutMs = rawTimeout === undefined ? DEFAULT_MODEL_TIMEOUT_MS : Number(rawTimeout);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) {
+    throw new Error(`REAPER_MODEL_TIMEOUT_MS must be a whole number of milliseconds >= 1000, got "${rawTimeout}".`);
+  }
+  return { baseUrl, apiKey, model: env("OPENAI_MODEL") ?? DEFAULT_MODEL, timeoutMs };
+}
+
 type JsonObject = Record<string, unknown>;
 type ProviderAnalysis = {
   summary: string;
@@ -20,13 +64,19 @@ function messageFor(response: Response, payload: unknown): string {
   return `${response.status} ${response.statusText}`.trim();
 }
 
-async function postJson(url: string, apiKey: string, body: unknown): Promise<JsonObject> {
-  const response = await fetch(url, {
+type PostOptions = { apiKey?: string; timeoutMs: number; dispatcher?: unknown };
+
+export async function postJson(url: string, body: unknown, options: PostOptions): Promise<JsonObject> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
+  const init = {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
-  });
+    signal: AbortSignal.timeout(options.timeoutMs),
+    ...(options.dispatcher ? { dispatcher: options.dispatcher } : {}),
+  };
+  const response = await fetch(url, init as RequestInit);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`${response.status}: ${messageFor(response, payload)}`);
   return payload as JsonObject;
@@ -50,7 +100,7 @@ function responseOutputText(payload: JsonObject): string {
       if (typeof object.text === "string") return object.text;
     }
   }
-  throw new Error("OpenAI returned no structured analysis text.");
+  throw new Error("Model returned no structured analysis text.");
 }
 
 export function createProviderDependencies(): RuntimeDependencies {
@@ -58,14 +108,14 @@ export function createProviderDependencies(): RuntimeDependencies {
     async research(query, limit) {
       const key = env("FIRECRAWL_API_KEY");
       if (!key) throw new Error("FIRECRAWL_API_KEY is not configured.");
-      const payload = await postJson("https://api.firecrawl.dev/v2/search", key, {
+      const payload = await postJson("https://api.firecrawl.dev/v2/search", {
         query,
         limit: Math.min(5, Math.max(1, limit)),
         sources: [{ type: "web" }],
         safe: true,
         timeout: 45_000,
         scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
-      });
+      }, { apiKey: key, timeoutMs: 60_000 });
       const dataObject = asRecord(payload.data);
       const candidates = Array.isArray(payload.data)
         ? payload.data
@@ -89,49 +139,20 @@ export function createProviderDependencies(): RuntimeDependencies {
     },
 
     async analyze(objective, sources) {
-      const key = env("OPENAI_API_KEY");
-      if (!key) throw new Error("OPENAI_API_KEY is not configured.");
-      const model = env("OPENAI_MODEL") ?? "gpt-5.4-mini";
-      const payload = await postJson("https://api.openai.com/v1/responses", key, {
+      const config = modelConfig();
+      const model = config.model;
+      const payload = await postJson(`${config.baseUrl}/responses`, {
         model,
-        instructions:
-          "Analyze only the supplied source records. Every factual claim must cite one or more supplied source IDs. Put uncertainty and missing evidence in limitations. Do not invent IDs or facts.",
+        instructions: ANALYSIS_INSTRUCTIONS,
         input: JSON.stringify({ objective, sources }),
-        text: {
-          format: {
-            type: "json_schema",
-            name: "reaper_analysis",
-            strict: true,
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              required: ["summary", "claims", "limitations"],
-              properties: {
-                summary: { type: "string" },
-                claims: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["text", "sourceIds"],
-                    properties: {
-                      text: { type: "string" },
-                      sourceIds: { type: "array", items: { type: "string" } },
-                    },
-                  },
-                },
-                limitations: { type: "array", items: { type: "string" } },
-              },
-            },
-          },
-        },
-      });
+        text: { format: { type: "json_schema", name: "reaper_analysis", strict: true, schema: REAPER_ANALYSIS_SCHEMA } },
+      }, { apiKey: config.apiKey, timeoutMs: config.timeoutMs });
       const parsed = JSON.parse(responseOutputText(payload)) as ProviderAnalysis;
       const claimsValid = Array.isArray(parsed?.claims) && parsed.claims.every((claim) =>
         claim && typeof claim.text === "string" && Array.isArray(claim.sourceIds) && claim.sourceIds.every((id) => typeof id === "string"));
       if (!parsed || typeof parsed.summary !== "string" || !claimsValid || !Array.isArray(parsed.limitations)
         || !parsed.limitations.every((item) => typeof item === "string")) {
-        throw new Error("OpenAI returned malformed structured analysis.");
+        throw new Error("Model returned malformed structured analysis.");
       }
       return {
         summary: parsed.summary,
