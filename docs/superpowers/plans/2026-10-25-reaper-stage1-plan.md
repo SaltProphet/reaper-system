@@ -88,9 +88,9 @@ Expected: `design/local-station`, only ` M src/routeTree.gen.ts`, HEAD at the pl
 ```bash
 node --version
 # if lower than v22.6:
-curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && . ~/.nvm/nvm.sh && nvm install 22 && nvm use 22 && node --version
+npx -y node@22 --version
 ```
-Expected: `v22.x` (≥ 22.6). Undo: `nvm uninstall 22`.
+Expected: `v22.x` (≥ 22.6). Run box tests with `npx -y node@22` instead of installing nvm; nothing is installed. Undo: none needed.
 
 - [ ] **Step 0.3: Baseline test, typecheck, lint on the box.**
 ```bash
@@ -507,9 +507,9 @@ Node's built-in fetch has a 300 s `headersTimeout`, and Ollama sends no headers 
 
 **Interfaces:** Consumes `postJson` with `dispatcher` (Task 3). Produces `modelAgentOptions(timeoutMs: number): { headersTimeout: number; bodyTimeout: number }` and internal `modelAgent(timeoutMs: number): Agent`.
 
-- [ ] **Step 5.1: Check.** `npm view undici version` and `npm view undici@<that version> engines`. Use the newest version whose `engines.node` accepts the PC's Node 22.x (from Step 0.4); if it does not, take the newest major that does (`npm view undici@7 engines`). Free npm package.
+- [ ] **Step 5.1: Check.** Pin `undici@6` (matches Node 22.23's bundled undici 6.29.1; tested working with built-in fetch). `npm view undici@6 version engines` to confirm `engines.node` accepts the PC's Node 22.x (from Step 0.4). Free npm package. Do not take newer majors untested.
 
-- [ ] **Step 5.2: Install on the box.** `npm install undici@<chosen version>`. Verify: `node -e "import('undici').then(m=>console.log(typeof m.Agent))"` → `function`. Undo: `npm uninstall undici`.
+- [ ] **Step 5.2: Install on the box.** `npm install undici@6`. Verify: `node -e "import('undici').then(m=>console.log(typeof m.Agent))"` → `function`. Undo: `npm uninstall undici`.
 
 - [ ] **Step 5.3: Write failing tests.** Add imports `import { createServer } from "node:http"; import type { AddressInfo } from "node:net"; import { Agent } from "undici";` and `postJson, modelAgentOptions` to the providers import, then:
 ```ts
@@ -1116,7 +1116,7 @@ curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8080/
 ```
 Expected: only `127.0.0.1`; HTTP 200. From another device (phone or Pi over Tailscale): `curl -m 5 http://<PC tailscale IP>:8080/` → refused or timeout.
 - [ ] **Step 13.3: Negative check.** Second shell: `$env:VITE_AUTH_ENABLED="false"; npx vite dev --host 0.0.0.0 --port 8097` → exits with `Refusing to start … 0.0.0.0`; nothing listens on 8097.
-- [ ] **Step 13.4: Build the run in the UI** at `http://127.0.0.1:8080`: set the Objective goal to a real research question (e.g. "What does Ollama's OpenAI-compatible API support for structured outputs?"), constraints "Cite sources", done-when "A record with at least one supported claim". The default graph is Objective → Research → Analysis → Record; add a **Condition** node between Analysis and Record (default path `claims.0.supported`) so the chain is Objective → Research → Analysis → Condition → Record. Click Run.
+- [ ] **Step 13.4: Build the run in the UI** at `http://127.0.0.1:8080`: set the Objective goal to a real research question (e.g. "What does Ollama's OpenAI-compatible API support for structured outputs?"), constraints "Cite sources", done-when "A record with at least one supported claim". The default graph is Objective → Research → Analysis → Record; the UI can't delete a wire, so: in the inspector remove the default **Record** node; from Integrations → Built-in catalog add **Condition** (default path `claims.0.supported`), then add **Record**; wire Analysis→Condition, then Condition→Record (the first wire out of a Condition is its "true" route), giving Objective → Research → Analysis → Condition → Record. Click Run.
 - [ ] **Step 13.5: Watch, do not intervene.** During Analysis, `ollama ps` shows `gpt-oss-20b-32k` with `CONTEXT 32768`. A failure is not retried: record the node error, stop, and report (max 2 runs in total).
 - [ ] **Step 13.6: Verify done-when.**
 ```powershell
