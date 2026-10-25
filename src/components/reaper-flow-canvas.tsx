@@ -5,7 +5,6 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
-  addEdge,
   Connection,
   Edge,
   Node,
@@ -196,10 +195,12 @@ export function ReaperFlowCanvas({
   const onConnectCb = useCallback(
     (params: Connection) => {
       if (!params.source || !params.target) return;
+      if (params.source === params.target) return;
+      // The graph is the only source of edges: the parent adds the edge to the
+      // graph, and the new edge arrives back here through graph.edges.
       onConnect(params.source, params.target);
-      setEdges((eds) => addEdge({ ...params, type: "smoothstep" }, eds));
     },
-    [onConnect, setEdges],
+    [onConnect],
   );
 
   const onNodeDragStop = useCallback(
