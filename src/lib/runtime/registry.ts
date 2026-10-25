@@ -21,6 +21,8 @@ export type ExecutorOutput = {
   outputs: Record<string, PortValue>;
   artifacts: Omit<RuntimeArtifact, "id" | "graphId" | "nodeId" | "createdAt">[];
   usage?: { search?: number; pages?: number; model?: number };
+  /** Extra node-log lines (token counts, rejected source IDs). */
+  notes?: string[];
 };
 
 export type ExecutorDefinition = {
@@ -108,8 +110,14 @@ const analysis: ExecutorDefinition = {
       })),
     };
     const out: PortValue<AnalysisResult> = { type: "analysis", value: checked };
+    const notes: string[] = [];
+    if (result.tokens) notes.push(`Model tokens: input ${result.tokens.input ?? "?"}, output ${result.tokens.output ?? "?"}.`);
+    // R3: logged verbatim (JSON-quoted, never normalized) so a look-alike ID is visible as-is.
+    const rejected = [...new Set(result.claims.flatMap((claim) => claim.sourceIds).filter((id) => !validIds.has(id)))];
+    if (rejected.length) notes.push(`Rejected source IDs (not in this run): ${rejected.map((id) => JSON.stringify(id)).join(", ")}.`);
     return {
       outputs: { analysis: out },
+      ...(notes.length ? { notes } : {}),
       artifacts: [artifact("analysis", out, checked.summary, checked.claims.flatMap((claim) => claim.sourceIds))],
       usage: { model: 1 },
     };

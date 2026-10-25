@@ -16,6 +16,8 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
+    "start:local": "node scripts/start-local.mjs",
+    "firecrawl:check": "node scripts/firecrawl-check.mjs",
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/preview-path-prefix.test.ts src/lib/runtime/runtime.test.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
@@ -73,6 +75,7 @@
     "tailwindcss": "^4.3.0",
     "tw-animate-css": "^1.3.4",
     "typescript": "^5.7.0",
+    "undici": "^7.30.1",
     "vaul": "^1.1.2",
     "vite": "^8.2.0",
     "zod": "^4.4.0",
@@ -95,4 +98,3 @@
     "typescript-eslint": "^8.56.1"
   }
 }
-

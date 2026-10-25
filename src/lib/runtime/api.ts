@@ -64,7 +64,16 @@ export const stepServerRun = createServerFn({ method: "POST" })
     if (owned.run.status === "done" || owned.run.status === "failed") return owned.run;
     const claimed = await claimRunStep(context.userId, data.expectedVersion, owned.run);
     const next = await stepRuntime(owned.workflow, claimed, createProviderDependencies());
-    return replaceRun(context.userId, claimed.version, next);
+    const saved = await replaceRun(context.userId, claimed.version, next);
+    // R5: done and failed are the only terminal states, and both end here.
+    try {
+      const { writeTerminalRunFile } = await import("./run-file.server");
+      const path = await writeTerminalRunFile(saved);
+      if (path) console.info(`[reaper] run file written: ${path}`);
+    } catch (error) {
+      console.error("[reaper] run file not written:", error);
+    }
+    return saved;
   });
 
 export const changeRunStatus = createServerFn({ method: "POST" })

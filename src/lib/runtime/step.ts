@@ -125,6 +125,9 @@ function shouldSkip(run: RuntimeRun, graph: Graph, node: NodeDef): boolean {
 }
 
 function transient(error: unknown): boolean {
+  if (error && typeof error === "object" && typeof (error as { retryable?: unknown }).retryable === "boolean") {
+    return (error as { retryable: boolean }).retryable;
+  }
   if (!(error instanceof Error)) return false;
   return /\b(408|409|425|429|500|502|503|504|timeout|temporar|rate limit|network)\b/i.test(error.message);
 }
@@ -258,6 +261,7 @@ export async function stepRuntime(
         ...run.log,
         ...(retryLogged ? [{ t: now, level: "system" as const, text: `${node.name} retried after a transient failure.` }] : []),
         { t: now, level: "module", text: `${graph.name} / ${node.name} produced ${Object.keys(result.outputs).join(", ")}.` },
+        ...(result.notes ?? []).map((note) => ({ t: now, level: "module" as const, text: `${graph.name} / ${node.name}: ${note}` })),
       ],
       updatedAt: now,
     };

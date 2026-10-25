@@ -1,0 +1,33 @@
+{
+  "model": "gpt-oss-20b-32k",
+  "instructions": "Analyze only the supplied source records. Every factual claim must cite one or more supplied source IDs. Put uncertainty and missing evidence in limitations. Do not invent IDs or facts.",
+  "input": "{\"objective\":{\"goal\":\"Does Ollama support the OpenAI Responses API?\",\"constraints\":\"Cite sources\",\"doneWhen\":\"A record exists\"},\"sources\":[{\"id\":\"SRC-001\",\"url\":\"https://example.com/ollama-responses\",\"title\":\"Ollama release notes\",\"retrievedAt\":\"2026-10-25T00:00:00.000Z\",\"content\":\"Ollama 0.13.3 adds an OpenAI-compatible /v1/responses endpoint.\"},{\"id\":\"SRC-002\",\"url\":\"https://example.com/structured-output\",\"title\":\"Structured outputs\",\"retrievedAt\":\"2026-10-25T00:00:00.000Z\",\"content\":\"Ollama supports JSON schema structured outputs via the format field.\"}]}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "reaper_analysis",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "claims", "limitations"],
+        "properties": {
+          "summary": { "type": "string" },
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["text", "sourceIds"],
+              "properties": {
+                "text": { "type": "string" },
+                "sourceIds": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "limitations": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}
