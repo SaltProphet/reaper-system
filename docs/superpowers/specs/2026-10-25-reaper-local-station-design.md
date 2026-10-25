@@ -46,7 +46,7 @@ The existing seam stays where it is. `RuntimeDependencies` (`types.ts`) is still
 Each unit lives in a small file, can be tested alone with injected fakes (the way `runtime.test.ts` already works), and talks to the others only through the interfaces listed here.
 
 ### 3.1 Settings (`src/lib/runtime/settings.server.ts`, new)
-- Reads environment variables and an optional `REAPER_DATA_DIR/settings.json`. Returns a frozen `StationSettings`:
+- Stage 1 reads only the environment variables below, directly in the model provider. The `settings.server.ts` unit and the optional `REAPER_DATA_DIR/settings.json` arrive in Stage 3. The unit reads environment variables and that optional file. Returns a frozen `StationSettings`:
   - `model: { baseUrl, apiKey?, defaultModel, timeoutMs, contextTokens }`. Defaults: `OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, `OPENAI_MODEL=gpt-oss:20b`, `REAPER_MODEL_TIMEOUT_MS=600000`, `REAPER_MODEL_CONTEXT=32768`. The key is required only when the base URL host is `api.openai.com`.
   - `caps: { maxSearches, maxPages, maxModelCalls }`. These are ceilings that a plan may not exceed. Defaults are 5 / 25 / 10.
   - `capabilities: { send: "locked" }`. In v1 the parser accepts no other value (see §3.6).
@@ -56,14 +56,15 @@ Each unit lives in a small file, can be tested alone with injected fakes (the wa
 ### 3.2 ModelClient (`src/lib/runtime/providers/model.server.ts`, split from `providers.server.ts`)
 - `complete({ model, instructions, input, schema, timeoutMs }) → Promise<{ text: string; model: string }>`
 - It keeps today's Responses-API request shape (`text.format: json_schema`, strict) and builds the URL as `${baseUrl}/responses`. Ollama ≥ 0.13.3 supports this.
+- **Stage 1 scope is only:** the configurable base URL, the optional key, the configurable timeout, the `gpt-oss:20b` default, and the message-only parsing in the next bullet (gpt-oss replies don't parse without it). The two bullets after that arrive in Stage 3.
 - `responseOutputText` is changed to read only `type: "message"` items, not reasoning items. gpt-oss is a thinking model, and today the function returns the first `text` it finds.
-- Errors are tagged `{ retryable: boolean }`. A local timeout or a refused connection is **not** retryable, because a retry doubles the GPU load. `step.ts` `transient()` checks the tag first and falls back to the current regex only for untagged errors.
-- Before each call it estimates the input size (characters ÷ 4). If the input exceeds 75% of `contextTokens`, it fails with a clear message instead of letting Ollama silently truncate.
+- (Stage 3) Errors are tagged `{ retryable: boolean }`. A local timeout or a refused connection is **not** retryable, because a retry doubles the GPU load. `step.ts` `transient()` checks the tag first and falls back to the current regex only for untagged errors.
+- (Stage 3) Before each call it estimates the input size (characters ÷ 4). If the input exceeds 75% of `contextTokens`, it fails with a clear message instead of letting Ollama silently truncate.
 - `analyze()` stays as a thin wrapper over `complete()` with the existing `reaper_analysis` schema and malformed-output checks.
 
 ### 3.3 SearchProvider (`src/lib/runtime/providers/firecrawl.server.ts`, moved)
 - The interface is unchanged: `(query, limit) → Promise<SourceRecord[]>`. Firecrawl is still the only v1 implementation. A future local version (SearXNG plus local fetch/cleanup) implements the same signature.
-- **Change:** source IDs are now assigned by the engine from a run-level counter (`run.nextSourceSeq`: `SRC-001`, `SRC-002`, …). Today every research call starts again at `SRC-001`, so two research nodes in one plan would collide.
+- **Change (Stage 3, when plans can have several research nodes):** source IDs are now assigned by the engine from a run-level counter (`run.nextSourceSeq`: `SRC-001`, `SRC-002`, …). Today every research call starts again at `SRC-001`, so two research nodes in one plan would collide.
 
 ### 3.4 Citation validator (`src/lib/runtime/citations.ts`, extracted from the analysis executor)
 - `validateClaims(claims, allowedIds: Set<string>) → AnalysisClaim[]`. A pure function.
@@ -109,7 +110,7 @@ Each unit lives in a small file, can be tested alone with injected fakes (the wa
 4. The UI drives `stepServerRun` one step at a time, as it does today (`claimRunStep` → `stepRuntime` → `replaceRun`).
 5. Research and tool nodes produce `SourceRecord`s with run-unique IDs. The analysis node calls the model with the objective, the evidence rule, and those sources. `validateClaims` marks the claims, and `builtin.record` writes supported and unsupported claims plus limitations.
 6. When a WRITE is reached, the gateway returns `NeedsApproval`. The engine stores a row in `reaper_approvals`, sets the run status to `awaiting_approval`, and does **not** advance. Approve stores a grant, and the next step re-runs that node, which uses the grant. Deny fails the node with "Denied by Justin" and the run follows its normal failure path.
-7. Persistence: migration `0003_station.sql` adds `reaper_workflows.approved_version`, `reaper_runs.status` value `awaiting_approval`, and table `reaper_approvals (id, user_id, run_id, node_key, tool_id, args_hash, args jsonb, decision, decided_at, consumed_at)`. In local mode, `src/lib/db.ts` passes `dataDir: REAPER_DATA_DIR/pglite` to `new PGlite`, so runs and pending approvals survive a restart. The existing auth-off/`DATABASE_URL` guard stays as it is.
+7. Persistence: migration `0003_station.sql` adds `reaper_workflows.approved_version`, `reaper_runs.status` value `awaiting_approval`, and table `reaper_approvals (id, user_id, run_id, node_key, tool_id, args_hash, args jsonb, decision, decided_at, consumed_at)`. In local mode, `src/lib/db.ts` passes `dataDir: REAPER_DATA_DIR/pglite` to `new PGlite`, so runs and pending approvals survive a restart. Durable storage arrives in Stage 3, and the migration's approval parts arrive in Stage 4. Stage 1 keeps today's in-memory PGLite. The existing auth-off/`DATABASE_URL` guard stays as it is.
 
 ## 5. Error handling
 
@@ -118,8 +119,8 @@ Every failure shows up in the run log and the node state. No failure is turned i
 | Failure | Behavior |
 |---|---|
 | Ollama not running or refusing connections | Node fails with "Model server not reachable at <baseUrl>". Not retried. |
-| Local model timeout | Fails after `timeoutMs`. Not retried. |
-| Input too large for the context | Fails before the call, naming the token estimate and the limit. |
+| Local model timeout | Fails after `timeoutMs`. From Stage 3 it is not retried. In Stage 1 the existing single retry still applies. |
+| Input too large for the context (Stage 3) | Fails before the call, naming the token estimate and the limit. |
 | Malformed or unparseable model JSON | Node fails (existing check). No partial claims are kept. |
 | Reasoning-only reply with no message item | Fails with "Model returned no answer text". |
 | Firecrawl key missing, empty results, or 5xx | Existing visible failures. A 429 or 5xx gets one retry. |
@@ -134,19 +135,22 @@ Every failure shows up in the run log and the node state. No failure is turned i
 
 - **Runner:** the existing `node --test`. The `test` script moves into `scripts/run-tests.mjs` so it works in both PowerShell and Linux CI. Today the single-quoted glob fails under `cmd.exe`, and the `&&` chain hides the TypeScript tests whenever a script test fails.
 - **Unit tests with fakes** for each unit in §3: ModelClient against recorded Ollama replies (including a gpt-oss reply with a reasoning item), Planner against recorded drafts, the gateway, the router, and the skill loader.
-- **Randomized property and stress tests** use a seeded generator in `src/lib/runtime/testing/random.ts`. The seed is printed on failure so the case can be replayed, and no new dependency is needed.
+- **Randomized property and stress tests (Stage 4 only, after one real run works)** use a seeded generator in `src/lib/runtime/testing/random.ts`. The seed is printed on failure so the case can be replayed, and no new dependency is needed.
   - Citation validator: ≥10,000 random claim sets against random source sets, including near-miss IDs (case, whitespace, zero-padding, look-alike Unicode, IDs from another run, empty lists). Invariant: supported ⇔ non-empty and every ID is an exact member.
   - Gateway: ≥10,000 random sequences of calls, approvals, denials, replays, edited args, and simulated restarts. Invariants: a WRITE tool's `run` is never invoked without a matching unused grant, a grant never works twice or for different args, and a SEND is never invoked under any settings value or grant.
   - Plan validator: random graphs are never accepted if they have an unknown tool, a SEND tool, an over-cap budget, more than 24 steps, or depth > 4.
 - **Layout check:** the existing Playwright smoke (`scripts/browser-smoke.mjs`) at 1280×720 and 1920×1080 asserts that the canvas is visible and non-empty and that no docked region overlaps it.
+- **Stage 1 adds no new test types.** It extends the existing mocked-provider tests in `runtime.test.ts` for the base URL, the optional key, the timeout, and parsing a reply with a reasoning item.
 - **Live check, one per stage, on the Shadow PC:** the stage's "done when" run, recorded in the Change Log.
 
 ## 7. Stages
 
 Each stage is gated: all tests pass (`npm test`, typecheck, lint) **and** its "done when" is met. Only then does the next stage begin.
 
-1. **Runs locally on Ollama.** ModelClient changes (§3.2: base URL, optional key, timeout, message-only parsing, retry tag, context check) and durable PGLite `dataDir`. Stage 1 keeps today's caps (1 search, 5 pages, 1 model call).
-   *Done when:* on the Shadow PC, one real run of Objective → Research → Analysis → Condition → Record with `gpt-oss:20b` finishes `done`, citations are validated with at least one supported claim, and the run is still listed after the app restarts.
+1. **Runs locally on Ollama (deliberately minimal).** The Ollama hookup in `providers.server.ts`: base URL, optional key, configurable timeout, `gpt-oss:20b` default, and message-only parsing. Then one real research run.
+   - It relies only on checks that already exist: citation validation, the step budget and depth limits, today's caps (1 search, 5 pages, 1 model call), and SEND blocked. SEND is blocked because no send tool exists and the "No external post from the engine." policy holds.
+   - It adds no sandbox, no allowlist, no write tools, no settings file, no durable storage, and no new stress tests, because the first run doesn't need them.
+   *Done when:* on the Shadow PC, one real run of Objective → Research → Analysis → Condition → Record with `gpt-oss:20b` finishes `done`, with citations validated and at least one supported claim.
 2. **Cleanup, layout, green CI.**
    - Remove the sample goal "Be known for reliable workflow rescue." from `engine.ts` `defaultState` (the objective starts empty).
    - Remove the Demo button and video overlay, legacy demo runs and their `localStorage` keys, `public/reaper-demo*.mp4`, and `scripts/record-demo.mjs`.
@@ -154,10 +158,13 @@ Each stage is gated: all tests pass (`npm test`, typecheck, lint) **and** its "d
    - Remove the dead six-stage console: `src/components/reaper-console.tsx`, `src/lib/reaper.ts`, and any `engine.ts` client-run helpers that only they use. Each removal is grep-checked first.
    - Build the docked layout (§3.9) and fix the 12 failing script tests (OG/title injection, app-env, `with-app-env`, and the `0001_auth.sql` copy).
    *Done when:* `npm test` passes on Node 22 on both Linux and Windows, CI is green once Justin pushes, and the layout check passes.
-3. **Planner.** §3.5, `plan-panel.tsx`, `approved_version`, schema v2.
+3. **Planner.** §3.5, `plan-panel.tsx`, `approved_version`, schema v2. Also: the settings unit (§3.1), run-unique source IDs (§3.3), the retry tag and context check (§3.2), and durable PGLite (§4.7), since drafts and multi-source plans need them.
    *Done when:* a plain-words goal produces a valid draft, nothing runs before approval (a test proves `beginRun` rejects unapproved and edited-after-approval workflows), and one approved, edited draft completes on the Shadow PC with validated citations.
-4. **Tool tiers with approval gates.** §3.6, `approval-card.tsx`, `reaper_approvals`, `awaiting_approval`.
-   *Done when:* the randomized gateway stress tests pass (no WRITE without approval, SEND always blocked), and one live run on the PC pauses for a `file.save` approval, writes after Approve, and fails cleanly after Deny.
+4. **Tool tiers with approval gates and self-protection.** §3.6, `approval-card.tsx`, `reaper_approvals`, `awaiting_approval`. This is the first stage with write tools, so the protections arrive here:
+   - the sandbox (allowed folders for `file.read` and `file.save`, and the `command.run` timeout);
+   - the allowlist (only tools listed in the approved plan may run);
+   - all randomized self-protection stress tests in §6 (citation validator, gateway, plan validator).
+   *Done when:* the randomized stress tests pass (no WRITE without approval, SEND always blocked), and one live run on the PC pauses for a `file.save` approval, writes after Approve, and fails cleanly after Deny.
 5. **Model router and skill loading.** §3.7 and §3.8.
    *Done when:* router tests show deterministic picks from the installed list with fallback, skill tests show only the requested skills from the allowed bundle are injected within budget, and one live run logs its chosen model and the skills it loaded.
 
@@ -169,7 +176,7 @@ The process combines Justin's Autonomous Workstation Methodology with a Superpow
 - **One change at a time:** one commit per change, with a message stating what, why, and how to undo it (`git revert <hash>`, plus any manual step such as deleting `REAPER_DATA_DIR/pglite`).
 - **Change Log:** every change also gets an entry in Justin's Change Log (what, files, commit, undo).
 - **Two-attempt limit:** a change gets at most 2 attempts. After a second failure the agent stops and reports. It does not loop.
-- **Per task:** the implementer subagent writes the failing test first, implements, and runs the full suite. An independent reviewer subagent then checks the work against this spec and for quality. The randomized tests for the touched unit run, and only then is the commit made.
+- **Per task:** the implementer subagent writes the failing test first, implements, and runs the full suite. An independent reviewer subagent then checks the work against this spec and for quality. From Stage 4 on, the randomized tests for the touched unit also run. Only then is the commit made.
 - **No external actions:** work happens on local branches only, with no pushes or PRs unless Justin asks.
 
 ## 9. Open questions
@@ -183,6 +190,6 @@ The process combines Justin's Autonomous Workstation Methodology with a Superpow
 ## 10. Spec self-review
 
 - **Placeholders:** none. Every default value, file, table, and threshold is named. Items that are genuinely undecided are in §9 only, and each has a working default (context 32768, outputs under `REAPER_DATA_DIR/outputs`, auth left dormant, router falls back to `gpt-oss:20b`).
-- **Consistency:** limits (budget 24, depth 4) are the same in §1, §3.5, §6, and §7. Stage 1 keeps the current caps, and plan-declared budgets arrive in Stage 3 within the §3.1 ceilings. SEND is blocked the same way in §3.1, §3.6, §5, and §6. There are no named modes anywhere: the station has one general Planner.
+- **Consistency:** limits (budget 24, depth 4) are the same in §1, §3.5, §6, and §7. Stage 1 is deliberately minimal: it uses only existing checks and adds no new safeguards. The sandbox, the allowlist, and the stress tests are all Stage 4, and that is stated the same way in §6 and §7. Stage 1 keeps the current caps, and plan-declared budgets arrive in Stage 3 within the §3.1 ceilings. SEND is blocked the same way in §3.1, §3.6, §5, and §6. There are no named modes anywhere: the station has one general Planner.
 - **Scope:** this is one product split into five gated stages. Each stage can get its own implementation plan. The v1 exclusions are listed in §1, and nothing in §3–§7 depends on them.
 - **Ambiguity:** "approval" means two separate things, and they are kept apart. Plan approval (`approved_version`) never authorizes a WRITE. A WRITE needs its own single-use grant. "Small" and "large" model are defined by a context threshold.
