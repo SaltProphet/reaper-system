@@ -1,5 +1,6 @@
 import { Agent } from "undici";
 import { env } from "../env.server.ts";
+import { ProviderError } from "./errors.ts";
 import type { RuntimeDependencies, SourceRecord } from "./types.ts";
 
 export const DEFAULT_MODEL_BASE_URL = "http://127.0.0.1:11434/v1";
@@ -123,6 +124,21 @@ export function responseOutputText(payload: JsonObject): string {
   throw new Error("Model returned no answer text.");
 }
 
+const TIMEOUT_CODES = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT"]);
+const UNREACHABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EHOSTUNREACH", "UND_ERR_SOCKET"]);
+
+export function classifyModelError(error: unknown, config: Pick<ModelConfig, "baseUrl" | "timeoutMs">): Error {
+  const name = (error as { name?: unknown } | null)?.name;
+  const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  if (name === "TimeoutError" || name === "AbortError" || (typeof code === "string" && TIMEOUT_CODES.has(code))) {
+    return new ProviderError(`Model call timed out after ${Math.round(config.timeoutMs / 1000)} s at ${config.baseUrl}.`, false);
+  }
+  if (typeof code === "string" && UNREACHABLE_CODES.has(code)) {
+    return new ProviderError(`Model server not reachable at ${config.baseUrl}.`, false);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 export function createProviderDependencies(): RuntimeDependencies {
   return {
     async research(query, limit) {
@@ -161,12 +177,17 @@ export function createProviderDependencies(): RuntimeDependencies {
     async analyze(objective, sources) {
       const config = modelConfig();
       const model = config.model;
-      const payload = await postJson(`${config.baseUrl}/responses`, {
-        model,
-        instructions: ANALYSIS_INSTRUCTIONS,
-        input: JSON.stringify({ objective, sources }),
-        text: { format: { type: "json_schema", name: "reaper_analysis", strict: true, schema: REAPER_ANALYSIS_SCHEMA } },
-      }, { apiKey: config.apiKey, timeoutMs: config.timeoutMs, dispatcher: modelAgent(config.timeoutMs) });
+      let payload: JsonObject;
+      try {
+        payload = await postJson(`${config.baseUrl}/responses`, {
+          model,
+          instructions: ANALYSIS_INSTRUCTIONS,
+          input: JSON.stringify({ objective, sources }),
+          text: { format: { type: "json_schema", name: "reaper_analysis", strict: true, schema: REAPER_ANALYSIS_SCHEMA } },
+        }, { apiKey: config.apiKey, timeoutMs: config.timeoutMs, dispatcher: modelAgent(config.timeoutMs) });
+      } catch (error) {
+        throw classifyModelError(error, config);
+      }
       const parsed = JSON.parse(responseOutputText(payload)) as ProviderAnalysis;
       const claimsValid = Array.isArray(parsed?.claims) && parsed.claims.every((claim) =>
         claim && typeof claim.text === "string" && Array.isArray(claim.sourceIds) && claim.sourceIds.every((id) => typeof id === "string"));

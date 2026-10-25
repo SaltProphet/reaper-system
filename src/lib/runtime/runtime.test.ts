@@ -7,8 +7,9 @@ import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
 import { EXECUTORS, getExecutor } from "./registry.ts";
 import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./step.ts";
-import { createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText } from "./providers.server.ts";
+import { classifyModelError, createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
+import { ProviderError } from "./errors.ts";
 
 const source = {
   id: "SRC-001",
@@ -387,4 +388,31 @@ test("global fetch honors the undici dispatcher's headersTimeout", async () => {
     await long.close();
     server.close();
   }
+});
+
+test("does not retry a provider error tagged non-retryable even if its text says timeout", async () => {
+  let calls = 0;
+  const deps = dependencies({
+    analyze: async () => {
+      calls += 1;
+      throw new ProviderError("Model call timeout after 600 s at http://127.0.0.1:11434/v1.", false);
+    },
+  });
+  const run = await runToEnd(workflow(defaultState().graphs[0]), deps);
+  assert.equal(run.status, "failed");
+  assert.equal(calls, 1);
+  assert.match(run.error ?? "", /timeout/);
+});
+
+test("classifies local timeouts and refused connections as not retryable", () => {
+  const config = { baseUrl: "http://127.0.0.1:11434/v1", timeoutMs: 600_000 };
+  const refused = classifyModelError(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }), config);
+  assert.equal((refused as ProviderError).retryable, false);
+  assert.match(refused.message, /Model server not reachable at http:\/\/127\.0\.0\.1:11434\/v1/);
+  const headers = classifyModelError(Object.assign(new TypeError("fetch failed"), { cause: { code: "UND_ERR_HEADERS_TIMEOUT" } }), config);
+  assert.equal((headers as ProviderError).retryable, false);
+  const aborted = classifyModelError(new DOMException("timed out", "TimeoutError"), config);
+  assert.match(aborted.message, /timed out after 600 s/);
+  const other = new Error("503 upstream");
+  assert.equal(classifyModelError(other, config), other);
 });
