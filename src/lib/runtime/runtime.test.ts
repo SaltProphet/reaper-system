@@ -12,7 +12,7 @@ import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./ste
 import { ANALYSIS_INSTRUCTIONS, classifyModelError, createProviderDependencies, modelAgentOptions, modelAuth, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText, SOURCE_CONTENT_CAP } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 import { ProviderError } from "./errors.ts";
-import { runFilePath, writeRunFile } from "./run-file.server.ts";
+import { runFilePath, writeRunFile, writeTerminalRunFile } from "./run-file.server.ts";
 
 const source = {
   id: "SRC-001",
@@ -568,4 +568,24 @@ test("writes nothing without a data dir and refuses odd run ids", async () => {
   const run = await runToEnd(workflow(defaultState().graphs[0]));
   await withEnv({ REAPER_DATA_DIR: undefined }, async () => assert.equal(await writeRunFile(run), null));
   assert.throws(() => runFilePath("C:\\ReaperData", "..\\..\\evil"), /unexpected run id/);
+});
+
+test("R5: every terminal state (done and failed) gets a run file; non-terminal states do not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reaper-runs-"));
+  try {
+    const failed = await runToEnd(workflow(defaultState().graphs[0]), dependencies({
+      analyze: async () => { throw new ProviderError("Model server not reachable at http://127.0.0.1:11434/v1.", false); },
+    }));
+    assert.equal(failed.status, "failed");
+    const path = await writeTerminalRunFile(failed, dir);
+    assert.equal(path, join(dir, "runs", `${failed.id}.json`));
+    assert.equal(JSON.parse(readFileSync(path!, "utf8")).run.status, "failed");
+    const done = await runToEnd(workflow(defaultState().graphs[0]));
+    assert.ok(await writeTerminalRunFile(done, dir));
+    const paused = createRuntimeRun("workflow-1", 1, workflow(defaultState().graphs[0]));
+    assert.equal(await writeTerminalRunFile(paused, dir), null);
+    assert.equal(await writeTerminalRunFile({ ...paused, status: "running" }, dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

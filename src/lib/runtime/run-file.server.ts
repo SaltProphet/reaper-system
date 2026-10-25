@@ -20,3 +20,12 @@ export async function writeRunFile(run: RuntimeRun, dataDir = env("REAPER_DATA_D
   await rename(temp, target);
   return target;
 }
+
+export function isTerminalRun(run: Pick<RuntimeRun, "status">): boolean {
+  return run.status === "done" || run.status === "failed";
+}
+
+/** R5: one call site for "write the run file when the run reached a terminal state". */
+export async function writeTerminalRunFile(run: RuntimeRun, dataDir = env("REAPER_DATA_DIR")): Promise<string | null> {
+  return isTerminalRun(run) ? writeRunFile(run, dataDir) : null;
+}
