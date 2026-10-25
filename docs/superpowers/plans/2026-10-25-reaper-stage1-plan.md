@@ -6,13 +6,13 @@
 
 **Architecture:** Keep the existing step engine, registry, citation check and persistence untouched. Change only the provider seam in `src/lib/runtime/providers.server.ts` (configurable base URL, optional key, timeout that really holds via an undici `Agent`, message-only parsing, non-retryable local errors, 7,000-char source cap), teach `step.ts` `transient()` to honor a `retryable` tag, write a run file at the end of each run from `api.ts` `stepServerRun`, and add a loopback-only launch script plus a Vite guard that refuses auth-off on non-loopback hosts.
 
-**Tech Stack:** TypeScript, TanStack Start + Vite 8, Node 22 (`node --test --experimental-strip-types`), PGLite in memory, Ollama ≥ 0.13.3 OpenAI-compatible `/v1/responses`, Firecrawl v2 search (cloud), `undici` (new dependency).
+**Tech Stack:** TypeScript, TanStack Start + Vite 8, Node 24 (`node --test --experimental-strip-types`), PGLite in memory, Ollama ≥ 0.13.3 OpenAI-compatible `/v1/responses`, Firecrawl v2 search (cloud), `undici` (new dependency).
 
 **Spec:** `docs/superpowers/specs/2026-10-25-reaper-local-station-design.md` §2, §3.2, §3.3, §4.9, §5, §6, §7 Stage 1.
 
 ## Global Constraints
 
-- Host: Windows 11 Shadow PC `SHADOW-9RO04NE7`, RTX A4500 20 GB, Node 22, Ollama. No Docker (virtualization disabled). No Vercel.
+- Host: Windows 11 Shadow PC `SHADOW-9RO04NE7`, RTX A4500 20 GB, Node 24 (v24.22.1, bundles undici 7), Ollama. No Docker (virtualization disabled). No Vercel.
 - Model defaults (spec §3.1): `OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, `OPENAI_MODEL=gpt-oss:20b`, `REAPER_MODEL_TIMEOUT_MS=600000`. The key is required only when the base URL host is `api.openai.com`.
 - `REAPER_MODEL_CONTEXT` is **not** used in Stage 1 (the context check is Stage 3). The window is set on the Ollama side.
 - Per-source content cap: 7,000 characters (was 20,000).
@@ -50,7 +50,7 @@ Justin's methodology (Workstation `Methodology.md`): define capability, scope an
 - **One change at a time:** one commit per task; the message states what, why, and undo (`git revert <hash>` plus any manual step).
 - **Two-attempt limit:** at most 2 attempts per step. After the second failure, stop, do not loop, and report the exact output.
 - **Change Log:** after each task, add one entry in `C:\Obsidian Vault\Workstation\08 Governance\Change Log\` named `YYYY-MM-DD HHMM <title>.md` using Appendix A (what, files, commit, verification, undo). Writing it is a PC write **[needs Justin's OK]**; Justin may give one standing OK for Change Log entries at Step 0.5.
-- Code work and unit tests happen in the box checkout `/workspace/audit/reaper-system` (Linux, Node 22). Live checks happen on the PC.
+- Code work and unit tests happen in the box checkout `/workspace/audit/reaper-system` (Linux, Node 24 via `npx -y node@24`, same major as the PC). Live checks happen on the PC.
 
 ## File structure
 
@@ -84,13 +84,13 @@ cd /workspace/audit/reaper-system && git branch --show-current && git status --s
 ```
 Expected: `design/local-station`, only ` M src/routeTree.gen.ts`, HEAD at the plan commit (child of `3baaed9`). Anything else modified: stop and report. Undo: none.
 
-- [ ] **Step 0.2: Get Node 22 on the box (box only, never the PC).** The box has Node 20.19, which lacks `--experimental-strip-types`.
+- [ ] **Step 0.2: Get Node 24 on the box (box only, never the PC).** The box has Node 20.19, which lacks `--experimental-strip-types`.
 ```bash
 node --version
-# if lower than v22.6:
-npx -y node@22 --version
+# box has v20; use the PC's major:
+npx -y node@24 --version
 ```
-Expected: `v22.x` (≥ 22.6). Run box tests with `npx -y node@22` instead of installing nvm; nothing is installed. Undo: none needed.
+Expected: `v24.x`. Run box tests with `npx -y node@24` instead of installing nvm; nothing is installed. Undo: none needed.
 
 - [ ] **Step 0.3: Baseline test, typecheck, lint on the box.**
 ```bash
@@ -110,7 +110,7 @@ Test-Path C:\ReaperData; Test-Path C:\Reaper\reaper-system
 if ($env:DATABASE_URL) { "DATABASE_URL is set in this shell" } else { "DATABASE_URL not set" }
 if ($env:FIRECRAWL_API_KEY) { "FIRECRAWL_API_KEY present" } else { "FIRECRAWL_API_KEY missing" }
 ```
-Expected: Node `v22.x`; Ollama ≥ `0.13.3`; `gpt-oss:20b` listed; 11434 listening; note what `ollama ps` has loaded and free VRAM; note whether 8080 is taken (then use `REAPER_PORT` in Task 13); record PID 33740's name (never touched). If Ollama < 0.13.3 or `gpt-oss:20b` is missing: stop and report (upgrading Ollama restarts it; that is Justin's call).
+Expected: Node `v24.x` (v22.6+ also works); Ollama ≥ `0.13.3`; `gpt-oss:20b` listed; 11434 listening; note what `ollama ps` has loaded and free VRAM; note whether 8080 is taken (then use `REAPER_PORT` in Task 13); record PID 33740's name (never touched). If Ollama < 0.13.3 or `gpt-oss:20b` is missing: stop and report (upgrading Ollama restarts it; that is Justin's call).
 
 - [ ] **Step 0.5: Get Justin's go-ahead** for the steps in "Steps that need Justin's OK" (end of plan) and ask whether he gives one standing OK for per-task Change Log entries. Record his answer in the first Change Log entry.
 
@@ -507,9 +507,9 @@ Node's built-in fetch has a 300 s `headersTimeout`, and Ollama sends no headers 
 
 **Interfaces:** Consumes `postJson` with `dispatcher` (Task 3). Produces `modelAgentOptions(timeoutMs: number): { headersTimeout: number; bodyTimeout: number }` and internal `modelAgent(timeoutMs: number): Agent`.
 
-- [ ] **Step 5.1: Check.** Pin `undici@6` (matches Node 22.23's bundled undici 6.29.1; tested working with built-in fetch). `npm view undici@6 version engines` to confirm `engines.node` accepts the PC's Node 22.x (from Step 0.4). Free npm package. Do not take newer majors untested.
+- [ ] **Step 5.1: Check.** Pin `undici@7` (matches Node 24.22.1's bundled undici 7.30.1; tested on the box under Node 24 and Node 22 with built-in fetch and undici's own fetch; `undici@6` also works on Node 24 but is a different major from the bundled one). `npm view undici@7 version engines` to confirm `engines.node` (`>=20.18.1`) accepts the PC's Node 24.x (from Step 0.4). Free npm package. Do not take newer majors untested.
 
-- [ ] **Step 5.2: Install on the box.** `npm install undici@6`. Verify: `node -e "import('undici').then(m=>console.log(typeof m.Agent))"` → `function`. Undo: `npm uninstall undici`.
+- [ ] **Step 5.2: Install on the box.** `npm install undici@7`. Verify: `node -e "import('undici').then(m=>console.log(typeof m.Agent))"` → `function`. Undo: `npm uninstall undici`.
 
 - [ ] **Step 5.3: Write failing tests.** Add imports `import { createServer } from "node:http"; import type { AddressInfo } from "node:net"; import { Agent } from "undici";` and `postJson, modelAgentOptions` to the providers import, then:
 ```ts
@@ -529,15 +529,15 @@ async function slowServer(delayMs: number) {
 }
 
 test("global fetch honors the undici dispatcher's headersTimeout", async () => {
-  const { server, url } = await slowServer(600);
+  const { server, url } = await slowServer(2_500); // undici timers have ~1 s resolution: keep the gap > 1 s
   const short = new Agent({ headersTimeout: 200, bodyTimeout: 200 });
-  const long = new Agent({ headersTimeout: 2_000, bodyTimeout: 2_000 });
+  const long = new Agent({ headersTimeout: 5_000, bodyTimeout: 5_000 });
   try {
     await assert.rejects(
-      () => postJson(url, {}, { timeoutMs: 5_000, dispatcher: short }),
+      () => postJson(url, {}, { timeoutMs: 10_000, dispatcher: short }),
       (error: any) => error?.cause?.code === "UND_ERR_HEADERS_TIMEOUT",
     );
-    assert.deepEqual(await postJson(url, {}, { timeoutMs: 5_000, dispatcher: long }), { ok: true });
+    assert.deepEqual(await postJson(url, {}, { timeoutMs: 10_000, dispatcher: long }), { ok: true });
   } finally {
     await short.close();
     await long.close();
@@ -568,7 +568,7 @@ function modelAgent(timeoutMs: number): Agent {
 ```
 In `analyze`, add `dispatcher: modelAgent(config.timeoutMs)` to the model `postJson` options.
 
-- [ ] **Step 5.6: Run, expect PASS.** If the dispatcher test fails because Node 22's bundled fetch rejects the package `Agent` (attempt 2): use undici's own fetch for model calls only.
+- [ ] **Step 5.6: Run, expect PASS.** If the dispatcher test fails because Node's bundled fetch rejects the package `Agent` (attempt 2): use undici's own fetch for model calls only.
   - Add `fetchImpl?: typeof fetch` to `PostOptions` and call `(options.fetchImpl ?? fetch)(url, init as RequestInit)` in `postJson`.
   - `import { Agent, fetch as undiciFetch } from "undici";` and pass `fetchImpl: undiciFetch as unknown as typeof fetch` in the model call only.
   - Give `createProviderDependencies(options: { modelFetch?: typeof fetch } = {})` an optional override used instead of `undiciFetch`; the tests that mock `globalThis.fetch` for `analyze` call `createProviderDependencies({ modelFetch: globalThis.fetch })`.
