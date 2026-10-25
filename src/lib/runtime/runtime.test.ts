@@ -7,7 +7,7 @@ import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
 import { EXECUTORS, getExecutor } from "./registry.ts";
 import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./step.ts";
-import { classifyModelError, createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText } from "./providers.server.ts";
+import { classifyModelError, createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText, SOURCE_CONTENT_CAP } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 import { ProviderError } from "./errors.ts";
 
@@ -415,4 +415,20 @@ test("classifies local timeouts and refused connections as not retryable", () =>
   assert.match(aborted.message, /timed out after 600 s/);
   const other = new Error("503 upstream");
   assert.equal(classifyModelError(other, config), other);
+});
+
+test("caps each Firecrawl source at 7,000 characters", async () => {
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    data: { web: [{ url: "https://example.com/long", title: "Long", markdown: "x".repeat(10_000) }] },
+  }), { status: 200 })) as typeof fetch;
+  try {
+    await withEnv({ FIRECRAWL_API_KEY: "test-firecrawl" }, async () => {
+      const [record] = await createProviderDependencies().research("q", 5);
+      assert.equal(SOURCE_CONTENT_CAP, 7_000);
+      assert.equal(record.content.length, 7_000);
+    });
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
 });

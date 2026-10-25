@@ -6,6 +6,7 @@ import type { RuntimeDependencies, SourceRecord } from "./types.ts";
 export const DEFAULT_MODEL_BASE_URL = "http://127.0.0.1:11434/v1";
 export const DEFAULT_MODEL = "gpt-oss:20b";
 export const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
+export const SOURCE_CONTENT_CAP = 7_000;
 export const ANALYSIS_INSTRUCTIONS =
   "Analyze only the supplied source records. Every factual claim must cite one or more supplied source IDs. Put uncertainty and missing evidence in limitations. Do not invent IDs or facts.";
 export const REAPER_ANALYSIS_SCHEMA = {
@@ -169,7 +170,7 @@ export function createProviderDependencies(): RuntimeDependencies {
           url,
           title: text(item.title) || text(metadata.title) || url,
           retrievedAt,
-          content: (text(item.markdown) || text(item.description) || text(item.content)).slice(0, 20_000),
+          content: (text(item.markdown) || text(item.description) || text(item.content)).slice(0, SOURCE_CONTENT_CAP),
         }];
       });
     },
