@@ -231,6 +231,7 @@ export function ReaperFlowCanvas({
   onMove,
   onConnect,
   onDeleteEdge,
+  onOpen,
 }: {
   graph: Graph;
   selectedId: string | null;
@@ -240,6 +241,7 @@ export function ReaperFlowCanvas({
   onMove: (id: string, x: number, y: number) => void;
   onConnect: (fromId: string, toId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
+  onOpen?: (node: NodeDef) => void;
 }) {
   const order = useMemo(() => orderedNodes(graph), [graph]);
 
@@ -306,16 +308,21 @@ export function ReaperFlowCanvas({
         onConnect={onConnectCb}
         onNodeClick={(_, n) => onSelect(n.id)}
         onNodeDragStop={onNodeDragStop}
+        onNodeDoubleClick={(_, n) => {
+          const def = graph.nodes.find((item) => item.id === n.id);
+          if (def && onOpen) onOpen(def);
+        }}
         onEdgesDelete={(eds) => eds.forEach((e) => onDeleteEdge(e.id))}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
         proOptions={{ hideAttribution: true }}
         deleteKeyCode={["Backspace", "Delete"]}
+        connectionRadius={140}
         style={{ background: "transparent" }}
       >
         <Background variant={BackgroundVariant.Lines} gap={40} color="#161616" />
-        <Controls />
+        <Controls showInteractive={false} />
       </ReactFlow>
       <style>{`
         .reaper-node.selected { outline: none !important; }
@@ -324,6 +331,10 @@ export function ReaperFlowCanvas({
         .react-flow__edge.selected .react-flow__edge-path,
         .react-flow__edge.animated .react-flow__edge-path { stroke: #e85d2a; }
         .react-flow__edge.animated { stroke-dasharray: 6 8; animation: pulse 2.4s linear infinite; }
+        .react-flow__controls { box-shadow: none; border: 1px solid #2a2a2a; border-radius: 4px; overflow: hidden; }
+        .react-flow__controls-button { background: #0c0c0c; border-bottom: 1px solid #2a2a2a; color: #e8e4dc; fill: #e8e4dc; }
+        .react-flow__controls-button:hover { background: #1a1a1a; }
+        .react-flow__controls-button svg { fill: #e8e4dc; }
         @keyframes pulse { to { stroke-dashoffset: -28; } }
       `}</style>
     </div>
