@@ -25,15 +25,49 @@ export function assertSafeBind({ host, authEnabled }) {
   );
 }
 
+/** A socket's local address is loopback (127.0.0.0/8, ::1, or IPv4-mapped 127.x). */
+export function isLoopbackAddress(address) {
+  const value = String(address ?? "").trim().toLowerCase();
+  if (!value) return false;
+  if (value === "::1") return true;
+  const v4 = value.startsWith("::ffff:") ? value.slice(7) : value;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+}
+
+/**
+ * Defense in depth behind assertSafeBind: with auth off, refuse any request that reached us
+ * on a non-loopback local address (e.g. a port forward or a host alias that resolved wide).
+ */
+export function loopbackOnlyMiddleware(isAuthEnabled) {
+  return function reaperLoopbackOnly(req, res, next) {
+    if (isAuthEnabled() || isLoopbackAddress(req.socket?.localAddress)) {
+      next();
+      return;
+    }
+    res.statusCode = 403;
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    res.end("Forbidden: auth is off, so Reaper only answers on loopback.");
+  };
+}
+
 export function loopbackGuardPlugin() {
+  let isPreview = false;
+  let authEnabled = true;
+  const install = (server) => {
+    server.middlewares.use(loopbackOnlyMiddleware(() => authEnabled));
+  };
   return {
     name: "reaper:loopback-guard",
     apply: "serve",
-    configResolved(config) {
-      assertSafeBind({
-        host: config.server.host,
-        authEnabled: authEnabledFrom(process.env.VITE_AUTH_ENABLED ?? config.env?.VITE_AUTH_ENABLED),
-      });
+    config(_config, configEnv) {
+      isPreview = Boolean(configEnv?.isPreview);
     },
+    configResolved(config) {
+      authEnabled = authEnabledFrom(process.env.VITE_AUTH_ENABLED ?? config.env?.VITE_AUTH_ENABLED);
+      // `vite preview` listens on preview.host, not server.host.
+      assertSafeBind({ host: isPreview ? config.preview?.host : config.server?.host, authEnabled });
+    },
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
