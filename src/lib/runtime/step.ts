@@ -261,6 +261,7 @@ export async function stepRuntime(
         ...run.log,
         ...(retryLogged ? [{ t: now, level: "system" as const, text: `${node.name} retried after a transient failure.` }] : []),
         { t: now, level: "module", text: `${graph.name} / ${node.name} produced ${Object.keys(result.outputs).join(", ")}.` },
+        ...(result.notes ?? []).map((note) => ({ t: now, level: "module" as const, text: `${graph.name} / ${node.name}: ${note}` })),
       ],
       updatedAt: now,
     };

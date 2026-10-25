@@ -9,7 +9,7 @@ import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
 import { EXECUTORS, getExecutor } from "./registry.ts";
 import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./step.ts";
-import { classifyModelError, createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText, SOURCE_CONTENT_CAP } from "./providers.server.ts";
+import { ANALYSIS_INSTRUCTIONS, classifyModelError, createProviderDependencies, modelAgentOptions, modelAuth, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText, SOURCE_CONTENT_CAP } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 import { ProviderError } from "./errors.ts";
 import { runFilePath, writeRunFile } from "./run-file.server.ts";
@@ -230,24 +230,25 @@ test("normalizes mocked Firecrawl results and parses OpenAI structured output", 
   const oldFetch = globalThis.fetch;
   process.env.FIRECRAWL_API_KEY = "test-firecrawl";
   process.env.OPENAI_API_KEY = "test-openai";
-  let request = 0;
-  globalThis.fetch = async () => {
-    request += 1;
-    if (request === 1) {
-      return new Response(JSON.stringify({ data: { web: [{ url: source.url, title: source.title, markdown: source.content }] } }), { status: 200 });
-    }
-    return new Response(JSON.stringify({
-      output_text: JSON.stringify({ summary: "Structured", claims: [{ text: "Claim", sourceIds: ["SRC-001"] }], limitations: [] }),
-    }), { status: 200 });
-  };
+  const oldBase = process.env.OPENAI_BASE_URL;
+  const oldModel = process.env.OPENAI_MODEL;
+  delete process.env.OPENAI_BASE_URL;
+  delete process.env.OPENAI_MODEL;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ data: { web: [{ url: source.url, title: source.title, markdown: source.content }] } }), { status: 200 });
+  const modelFetch = async () => new Response(JSON.stringify({
+    output_text: JSON.stringify({ summary: "Structured", claims: [{ text: "Claim", sourceIds: ["SRC-001"] }], limitations: [] }),
+  }), { status: 200 });
   try {
-    const providers = createProviderDependencies();
+    const providers = createProviderDependencies({ modelFetch });
     const sources = await providers.research("query", 5);
     assert.equal(sources[0].id, "SRC-001");
     const result = await providers.analyze(workflow(defaultState().graphs[0]).objective, sources);
     assert.equal(result.summary, "Structured");
-    assert.equal(result.model, "gpt-oss:20b");
+    assert.equal(result.model, "gpt-5.4-mini");
   } finally {
+    if (oldBase === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = oldBase;
+    if (oldModel === undefined) delete process.env.OPENAI_MODEL; else process.env.OPENAI_MODEL = oldModel;
     globalThis.fetch = oldFetch;
     delete process.env.FIRECRAWL_API_KEY;
     delete process.env.OPENAI_API_KEY;
@@ -265,9 +266,9 @@ test("provider adapters fail visibly for missing credentials, empty results, and
   assert.deepEqual(await createProviderDependencies().research("query", 5), []);
 
   process.env.OPENAI_API_KEY = "test-openai";
-  globalThis.fetch = async () => new Response(JSON.stringify({ output_text: "not json" }), { status: 200 });
+  const modelFetch = async () => new Response(JSON.stringify({ output_text: "not json" }), { status: 200 });
   await assert.rejects(
-    () => createProviderDependencies().analyze(workflow(defaultState().graphs[0]).objective, [source]),
+    () => createProviderDependencies({ modelFetch }).analyze(workflow(defaultState().graphs[0]).objective, [source]),
     /JSON|malformed/i,
   );
   globalThis.fetch = oldFetch;
@@ -290,9 +291,13 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => unkno
   }
 }
 
-test("model config defaults to local Ollama with no key", () => withEnv(
-  { OPENAI_BASE_URL: undefined, OPENAI_API_KEY: undefined, OPENAI_MODEL: undefined, REAPER_MODEL_TIMEOUT_MS: undefined },
-  () => assert.deepEqual(modelConfig(), { baseUrl: "http://127.0.0.1:11434/v1", apiKey: undefined, model: "gpt-oss:20b", timeoutMs: 600_000 }),
+test("model config keeps the pre-Stage-1 cloud defaults (OpenAI, gpt-5.4-mini) so a deploy does not break", () => withEnv(
+  { OPENAI_BASE_URL: undefined, OPENAI_API_KEY: undefined, OPENAI_MODEL: undefined, REAPER_MODEL_TIMEOUT_MS: undefined, REAPER_MODEL_API_KEY: undefined },
+  () => {
+    assert.throws(() => modelConfig(), /OPENAI_API_KEY/);
+    process.env.OPENAI_API_KEY = "k";
+    assert.deepEqual(modelConfig(), { baseUrl: "https://api.openai.com/v1", apiKey: "k", model: "gpt-5.4-mini", timeoutMs: 600_000 });
+  },
 ));
 
 test("model config requires a key only for api.openai.com and validates the timeout", () => withEnv(
@@ -307,23 +312,106 @@ test("model config requires a key only for api.openai.com and validates the time
 ));
 
 test("analysis posts to the configured base URL without an Authorization header when no key is set", async () => {
-  const oldFetch = globalThis.fetch;
   const seen: { url: string; headers: Record<string, string>; body: any }[] = [];
-  globalThis.fetch = (async (url: string, init: RequestInit) => {
+  const modelFetch = async (url: string, init: Record<string, unknown>) => {
     seen.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) });
     return new Response(JSON.stringify({ output_text: JSON.stringify({ summary: "s", claims: [], limitations: [] }) }), { status: 200 });
-  }) as typeof fetch;
-  try {
-    await withEnv({ OPENAI_BASE_URL: "http://127.0.0.1:11434/v1", OPENAI_API_KEY: undefined, OPENAI_MODEL: "gpt-oss-20b-32k" }, async () => {
-      const result = await createProviderDependencies().analyze(workflow(defaultState().graphs[0]).objective, [source]);
-      assert.equal(result.model, "gpt-oss-20b-32k");
-    });
-    assert.equal(seen[0].url, "http://127.0.0.1:11434/v1/responses");
-    assert.equal("Authorization" in seen[0].headers, false);
-    assert.equal(seen[0].body.text.format.strict, true);
-  } finally {
-    globalThis.fetch = oldFetch;
+  };
+  await withEnv({ OPENAI_BASE_URL: "http://127.0.0.1:11434/v1", OPENAI_API_KEY: undefined, REAPER_MODEL_API_KEY: undefined, OPENAI_MODEL: "gpt-oss-20b-32k" }, async () => {
+    const result = await createProviderDependencies({ modelFetch }).analyze(workflow(defaultState().graphs[0]).objective, [source]);
+    assert.equal(result.model, "gpt-oss-20b-32k");
+  });
+  assert.equal(seen[0].url, "http://127.0.0.1:11434/v1/responses");
+  assert.equal("Authorization" in seen[0].headers, false);
+  assert.equal(seen[0].body.text.format.strict, true);
+});
+
+test("S1: sends Authorization only to api.openai.com, or over https with REAPER_MODEL_API_KEY", () => {
+  assert.deepEqual(modelAuth("https://api.openai.com/v1", { OPENAI_API_KEY: "sk-a" }), { apiKey: "sk-a" });
+  assert.deepEqual(modelAuth("https://models.example.com/v1", { REAPER_MODEL_API_KEY: "rk-b", OPENAI_API_KEY: "sk-a" }), { apiKey: "rk-b" });
+  assert.deepEqual(modelAuth("http://127.0.0.1:11434/v1", {}), {});
+  for (const [url, keys] of [
+    ["http://127.0.0.1:11434/v1", { OPENAI_API_KEY: "sk-a" }],
+    ["https://models.example.com/v1", { OPENAI_API_KEY: "sk-a" }],
+    ["http://models.example.com/v1", { REAPER_MODEL_API_KEY: "rk-b" }],
+  ] as const) {
+    const auth = modelAuth(url, keys);
+    assert.equal(auth.apiKey, undefined, url);
+    assert.match(auth.warning ?? "", /not sent/, url);
+    assert.doesNotMatch(auth.warning ?? "", /sk-a|rk-b/, url);
   }
+});
+
+test("S1: a local base URL never receives OPENAI_API_KEY, and the warning omits the value", async () => {
+  const seen: Record<string, string>[] = [];
+  const warnings: string[] = [];
+  const oldWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+  const modelFetch = async (_url: string, init: Record<string, unknown>) => {
+    seen.push(init.headers as Record<string, string>);
+    return new Response(JSON.stringify({ output_text: JSON.stringify({ summary: "s", claims: [], limitations: [] }) }), { status: 200 });
+  };
+  try {
+    await withEnv({ OPENAI_BASE_URL: "http://127.0.0.1:11434/v1", OPENAI_API_KEY: "sk-secret-value", REAPER_MODEL_API_KEY: undefined }, async () => {
+      await createProviderDependencies({ modelFetch }).analyze(workflow(defaultState().graphs[0]).objective, [source]);
+    });
+  } finally {
+    console.warn = oldWarn;
+  }
+  assert.equal("Authorization" in seen[0], false);
+  assert.ok(warnings.some((line) => /not sent/.test(line)));
+  assert.ok(warnings.every((line) => !line.includes("sk-secret-value")));
+});
+
+test("R1: an incomplete reply fails with its reason instead of parsing truncated text", () => {
+  assert.throws(
+    () => responseOutputText({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [
+      { type: "message", content: [{ type: "output_text", text: "{\"summary\":\"trunc" }] },
+    ] }),
+    /^Error: Model reply incomplete: max_output_tokens$/,
+  );
+  assert.throws(
+    () => responseOutputText({ status: "completed", output: [
+      { type: "message", status: "incomplete", content: [{ type: "output_text", text: "{" }] },
+    ] }),
+    /Model reply incomplete/,
+  );
+  assert.equal(responseOutputText({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: "ok" }] }] }), "ok");
+});
+
+test("R1: analysis reports the reply's input and output token counts", async () => {
+  const modelFetch = async () => new Response(JSON.stringify({
+    status: "completed",
+    usage: { input_tokens: 1234, output_tokens: 56 },
+    output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ summary: "s", claims: [], limitations: [] }) }] }],
+  }), { status: 200 });
+  await withEnv({ OPENAI_BASE_URL: "http://127.0.0.1:11434/v1", OPENAI_API_KEY: undefined }, async () => {
+    const result = await createProviderDependencies({ modelFetch }).analyze(workflow(defaultState().graphs[0]).objective, [source]);
+    assert.deepEqual(result.tokens, { input: 1234, output: 56 });
+  });
+});
+
+test("R1/R3: the node log records token counts and rejected source IDs verbatim", async () => {
+  const odd = "SRC\u2011001"; // non-breaking hyphen: must be logged as given, never normalized
+  const run = await runToEnd(workflow(defaultState().graphs[0]), dependencies({
+    analyze: async () => ({
+      summary: "s",
+      claims: [{ text: "c", sourceIds: [odd, "SRC-001"], supported: false }, { text: "d", sourceIds: ["SRC-9"], supported: false }],
+      limitations: [],
+      model: "m",
+      tokens: { input: 900, output: 40 },
+    }),
+  }));
+  const lines = run.log.map((entry) => entry.text);
+  assert.ok(lines.some((line) => line.includes("input 900") && line.includes("output 40")), lines.join("\n"));
+  const rejected = lines.find((line) => line.includes("Rejected source IDs"));
+  assert.ok(rejected, lines.join("\n"));
+  assert.ok(rejected!.includes(JSON.stringify(odd)) && rejected!.includes("\"SRC-9\""), rejected);
+  assert.ok(!rejected!.includes("\"SRC-001\""), rejected);
+});
+
+test("R3: the instructions ask for exact ASCII source IDs", () => {
+  assert.match(ANALYSIS_INSTRUCTIONS, /Copy source IDs exactly as given, ASCII only\./);
 });
 
 test("the code schema is exactly the schema in the recorded fixture request", () => {
@@ -376,10 +464,12 @@ async function slowServer(delayMs: number) {
   return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/` };
 }
 
-test("global fetch honors the undici dispatcher's headersTimeout", async () => {
+test("B1: a dispatcher is always paired with undici's own fetch, never Node's bundled one", async () => {
   const { server, url } = await slowServer(2_500); // undici timers have ~1 s resolution: keep the gap > 1 s
   const short = new Agent({ headersTimeout: 200, bodyTimeout: 200 });
   const long = new Agent({ headersTimeout: 5_000, bodyTimeout: 5_000 });
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("global fetch must not carry an undici@7 Agent"); }) as typeof fetch;
   try {
     await assert.rejects(
       () => postJson(url, {}, { timeoutMs: 10_000, dispatcher: short }),
@@ -387,6 +477,7 @@ test("global fetch honors the undici dispatcher's headersTimeout", async () => {
     );
     assert.deepEqual(await postJson(url, {}, { timeoutMs: 10_000, dispatcher: long }), { ok: true });
   } finally {
+    globalThis.fetch = oldFetch;
     await short.close();
     await long.close();
     server.close();
@@ -418,6 +509,29 @@ test("classifies local timeouts and refused connections as not retryable", () =>
   assert.match(aborted.message, /timed out after 600 s/);
   const other = new Error("503 upstream");
   assert.equal(classifyModelError(other, config), other);
+});
+
+test("R2: an HTTP error from a loopback model server is not retried; remote behavior is unchanged", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "model runner crashed" } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  try {
+    const error = await postJson(url, {}, { timeoutMs: 5_000 }).then(() => null, (caught: unknown) => caught);
+    assert.ok(error instanceof Error);
+    const local = classifyModelError(error, { baseUrl: "http://127.0.0.1:11434/v1", timeoutMs: 600_000 });
+    assert.ok(local instanceof ProviderError);
+    assert.equal((local as ProviderError).retryable, false);
+    assert.match(local.message, /500: model runner crashed/);
+    for (const baseUrl of ["http://localhost:11434/v1", "http://[::1]:11434/v1"]) {
+      assert.equal((classifyModelError(error, { baseUrl, timeoutMs: 600_000 }) as ProviderError).retryable, false, baseUrl);
+    }
+    assert.equal(classifyModelError(error, { baseUrl: "https://api.openai.com/v1", timeoutMs: 600_000 }), error);
+  } finally {
+    server.close();
+  }
 });
 
 test("caps each Firecrawl source at 7,000 characters", async () => {

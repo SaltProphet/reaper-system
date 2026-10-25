@@ -26,6 +26,8 @@ export type AnalysisResult = {
   claims: AnalysisClaim[];
   limitations: string[];
   model: string;
+  /** Token counts from the model reply's usage block, when it has one (R1). */
+  tokens?: { input?: number; output?: number };
 };
 
 export type RuntimeArtifact = {
