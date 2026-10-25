@@ -12,9 +12,13 @@ import {
   Position,
   BackgroundVariant,
   Panel,
+  BaseEdge,
+  EdgeLabelRenderer,
+  getSmoothStepPath,
+  type EdgeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Graph, NodeDef, Run } from "@/lib/engine";
 import { IMPLS, orderedNodes } from "@/lib/engine";
 
@@ -107,6 +111,93 @@ function ReaperNode({ data, selected }: { data: ReaperNodeData; selected: boolea
 
 const nodeTypes = { reaper: ReaperNode };
 
+type ReaperEdgeData = { hot: boolean; onDelete: (id: string) => void };
+
+// Dim wire by default; ember when hovered or touching the running node.
+// Hovering shows a small x at the wire's midpoint that deletes it.
+function ReaperEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  data,
+}: EdgeProps<Edge<ReaperEdgeData>>) {
+  const [hover, setHover] = useState(false);
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [path, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+  const enter = () => {
+    if (leaveTimer.current) clearTimeout(leaveTimer.current);
+    setHover(true);
+  };
+  // Small delay so moving from the wire onto the x doesn't hide the x.
+  const leave = () => {
+    leaveTimer.current = setTimeout(() => setHover(false), 120);
+  };
+  useEffect(() => () => {
+    if (leaveTimer.current) clearTimeout(leaveTimer.current);
+  }, []);
+  const lit = hover || !!data?.hot;
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={{ stroke: lit ? "#e85d2a" : "#5a5650", strokeWidth: 1.8 }} />
+      <path
+        d={path}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={18}
+        style={{ pointerEvents: "stroke", cursor: "pointer" }}
+        onMouseEnter={enter}
+        onMouseLeave={leave}
+      />
+      {hover ? (
+        <EdgeLabelRenderer>
+          <button
+            type="button"
+            className="nodrag nopan reaper-edge-x"
+            aria-label="Delete wire"
+            onMouseEnter={enter}
+            onMouseLeave={leave}
+            onClick={(event) => {
+              event.stopPropagation();
+              data?.onDelete(id);
+            }}
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: "all",
+              width: 18,
+              height: 18,
+              lineHeight: "16px",
+              padding: 0,
+              borderRadius: 9,
+              border: "1px solid #e85d2a",
+              background: "#0c0c0c",
+              color: "#e85d2a",
+              fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            ×
+          </button>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
+}
+
+const edgeTypes = { reaper: ReaperEdge };
+
 // Status of one node in this graph, read from the active run.
 // running: the run's stack currently points at this node (including a parent
 //          node whose child graph is executing).
@@ -170,20 +261,17 @@ export function ReaperFlowCanvas({
     [graph, order, run, selectedId],
   );
 
-  const initialEdges: Edge[] = useMemo(
+  const initialEdges: Edge<ReaperEdgeData>[] = useMemo(
     () =>
       (graph.edges ?? []).map((e) => ({
         id: e.id,
         source: e.from,
         target: e.to,
-        type: "smoothstep",
-        style: {
-          stroke: hotId && (e.from === hotId || e.to === hotId) ? "#e85d2a" : "#5a5650",
-          strokeWidth: 1.8,
-        },
+        type: "reaper",
+        data: { hot: !!hotId && (e.from === hotId || e.to === hotId), onDelete: onDeleteEdge },
         animated: e.to === hotId,
       })),
-    [graph.edges, hotId],
+    [graph.edges, hotId, onDeleteEdge],
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -220,6 +308,7 @@ export function ReaperFlowCanvas({
         onNodeDragStop={onNodeDragStop}
         onEdgesDelete={(eds) => eds.forEach((e) => onDeleteEdge(e.id))}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         fitView
         proOptions={{ hideAttribution: true }}
         deleteKeyCode={["Backspace", "Delete"]}
