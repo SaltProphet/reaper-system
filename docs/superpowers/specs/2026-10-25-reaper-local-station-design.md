@@ -8,13 +8,13 @@
 
 ## 1. Goal and scope
 
-Reaper becomes **one general local research station**. Justin describes a goal in plain words, for example "find buyer intent on Reddit for product X". A Planner drafts a workflow: the nodes, the sources and tools to use, and what counts as evidence. Justin reviews the draft, edits it if he wants, and approves it. Only then does it run. Every factual claim in the output cites source IDs collected in that same run.
+Reaper becomes **one general local research station**. Justin describes a goal in plain words, for example "find buyer intent on Reddit for product X". A Planner drafts a workflow: the nodes, the sources and tools to use, and what counts as evidence. By default the plan runs right away, and the plan, every step, and every tool call are shown live and logged. A **"review plan first"** setting (off by default) makes Reaper wait for Justin's OK before running, and lets him edit the draft first. Writes happen inside a workspace folder that Reaper owns. That folder is snapshotted, and each run ends with a run report and an **Undo this run** button. Every factual claim in the output cites source IDs collected in that same run.
 
 The station grows out of the existing Reaper. Nothing is rebuilt from scratch. These parts stay as they are: the step engine (`step.ts`), the step budget (`STEP_BUDGET=24`), the depth limit (`MAX_DEPTH=4`), port contracts (`registry.ts`), citation validation, Postgres/PGLite persistence with optimistic versioning (`persistence.server.ts`), and the policies in `engine.ts` `POLICIES` ("No evidence, no factual claim.", "No external post from the engine.", and the rest).
 
 **Host:** Justin's Windows 11 Shadow PC (RTX A4500, 20 GB). It runs natively on Node 22 and Ollama. That PC has no Docker because virtualization is disabled. Vercel is not a target: it is unpaid, and it can't reach the local model anyway. A Raspberry Pi 5 with Docker is an optional later host for helpers such as SearXNG or Postgres. Nothing in v1 depends on it.
 
-**In v1:** local model runs, cleanup and a docked layout, green CI, the Planner with an approval gate, three tool tiers, a model router, and on-demand skill loading. These are delivered in the five stages of §7.
+**In v1:** local model runs, cleanup and a docked layout, green CI, the Planner (runs immediately; optional review), three tool tiers with a sandboxed workspace, self-protection, run reports with undo, a model router, and on-demand skill loading. These are delivered in the five stages of §7.
 
 **Out of v1:** multi-agent orchestration, arbitrary code nodes, sending or posting anything, cloud hosting, and a local search replacement for Firecrawl (that is a later stage).
 
@@ -23,23 +23,25 @@ The station grows out of the existing Reaper. Nothing is rebuilt from scratch. T
 One Node process on the Shadow PC (`npm run dev` with `VITE_AUTH_ENABLED=false`) talks to Ollama at `http://127.0.0.1:11434/v1`.
 
 ```
-Workbench UI (workbench.tsx, node-canvas.tsx, new plan-panel.tsx, approval-card.tsx)
+Workbench UI (workbench.tsx, node-canvas.tsx, new plan-panel.tsx, run-report.tsx, approval-card.tsx)
    │  server functions (api.ts)
    ▼
-Planner (planner.server.ts) ──► draft WorkflowDefinition ──► Justin edits/approves
-   ▼                                               (approved_version == version)
+Planner (planner.server.ts) ──► draft WorkflowDefinition ──► runs now (default)
+   ▼                     or waits for Justin's OK if "review plan first" is on
 Step engine (step.ts, unchanged core: budget 24, depth 4, one step per call)
    ▼
 Executors (registry.ts: objective, research, analysis, condition, record, + tool)
    ▼
-Tool Gateway (tools/gateway.server.ts) — tier check: READ / WRITE(approval) / SEND(blocked)
+Tool Gateway (tools/gateway.server.ts) — READ free · WRITE free inside workspace (snapshotted),
+   ▼                                         approval outside it · SEND hard-blocked
+   │   Protected zone (data dir, logs, settings, allowlist, Reaper source): no tool can write
    ▼
 Providers: ModelClient (OpenAI-compatible → Ollama) · SearchProvider (Firecrawl) · local file/command
    ▼
-Persistence: PGLite with a data dir on disk (local) or Postgres (DATABASE_URL)
+Persistence: PGLite with a data dir on disk (local) or Postgres (DATABASE_URL); snapshots + reports on disk
 ```
 
-The existing seam stays where it is. `RuntimeDependencies` (`types.ts`) is still the only way executors reach the outside world. The change is that the seam's `research`/`analyze` pair grows into `{ models, search, tools }`, and every tool call goes through the gateway.
+The existing seam stays where it is. `RuntimeDependencies` (`types.ts`) is still the only way executors reach the outside world. The change is that the seam's `research`/`analyze` pair grows into `{ models, search, tools }`, and every tool call goes through the gateway, which logs it before and after it runs.
 
 ## 3. Components and interfaces
 
@@ -49,9 +51,13 @@ Each unit lives in a small file, can be tested alone with injected fakes (the wa
 - Stage 1 reads only the environment variables below, directly in the model provider. The `settings.server.ts` unit and the optional `REAPER_DATA_DIR/settings.json` arrive in Stage 3. The unit reads environment variables and that optional file. Returns a frozen `StationSettings`:
   - `model: { baseUrl, apiKey?, defaultModel, timeoutMs, contextTokens }`. Defaults: `OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, `OPENAI_MODEL=gpt-oss:20b`, `REAPER_MODEL_TIMEOUT_MS=600000`, `REAPER_MODEL_CONTEXT=32768`. The key is required only when the base URL host is `api.openai.com`.
   - `caps: { maxSearches, maxPages, maxModelCalls }`. These are ceilings that a plan may not exceed. Defaults are 5 / 25 / 10.
+  - `dataDir`: `REAPER_DATA_DIR`, default `C:\ReaperData`, from Stage 3. It holds settings, logs, PGLite data, snapshots, reports, and skills.
+  - `reviewPlanFirst: boolean`, default `false` (§3.5).
+  - `workspace: { root, snapshotMaxBytes }`, from Stage 4. `REAPER_WORKSPACE`, default `C:\ReaperWorkspace`; `snapshotMaxBytes` default 2 GB. Reaper creates the root if missing. At startup it **refuses to start** if the workspace root overlaps the protected zone (§3.10): inside it, containing it, or the same path after resolving links.
+  - `commands.allowlist`, from Stage 4. Entries are `{ program, args: pattern[] }`. A program is matched by its resolved full path, and each argument by an exact string or a narrow pattern. There are no wildcards for the program. The starting list is in §9.
   - `capabilities: { send: "locked" }`. In v1 the parser accepts no other value (see §3.6).
   - `router` and `skills` blocks, used from Stage 5 on (see §3.7 and §3.8).
-- Invalid settings make the server refuse to start, with one message naming the bad field.
+- Invalid settings, or unknown fields, make the server refuse to start, with one message naming the bad field. Settings are read once at startup and frozen. There is no field that turns logging off. Only Justin edits settings, by hand in the file followed by a restart; tools can't (§3.10).
 
 ### 3.2 ModelClient (`src/lib/runtime/providers/model.server.ts`, split from `providers.server.ts`)
 - `complete({ model, instructions, input, schema, timeoutMs }) → Promise<{ text: string; model: string }>`
@@ -75,16 +81,22 @@ Each unit lives in a small file, can be tested alone with injected fakes (the wa
 - `draftPlan(goal: string, settings) → Promise<PlanDraft>`, where `PlanDraft = { definition: WorkflowDefinition; notes: string[] }`.
 - One `ModelClient.complete` call with a JSON schema. The schema only allows the executor IDs in `EXECUTORS` and the tool IDs registered as READ or WRITE. SEND tools are not in the schema.
 - The draft fills in `objective.goal`, `objective.constraints`, `objective.doneWhen`, and a new `objective.evidence` field ("what counts as evidence"). The analysis instructions receive that field. It also fills in `plan: { jobKind: "research" | "build" | "fix", budget: { searches, pages, modelCalls } }`.
-- Checks: `validateWorkflowDefinition` (cycles, ports, types), plus a budget within `settings.caps`, at most 24 steps in the worst case, depth ≤ 4, and no unknown or SEND tools. If the draft fails, the model gets **one** repair attempt with the error list. If that also fails, the draft is shown with its errors and nothing is runnable. That is the 2-attempt maximum.
+- Checks: `validateWorkflowDefinition` (cycles, ports, types), plus at most 24 steps in the worst case, depth ≤ 4, and no unknown or SEND tools. If the draft fails, the model gets **one** repair attempt with the error list. If that also fails, the draft is shown with its errors and does not run. That is the 2-attempt maximum. Justin can fix the draft by hand and press **Run**.
+- **After a valid draft:** if `reviewPlanFirst` is `false` (the default) and the budget is within `settings.caps`, the run starts immediately. If `reviewPlanFirst` is `true`, the run waits for **Approve & run**, and Justin can edit the draft first. A budget above the ceilings always waits for his approval of that budget, whatever the setting.
 - `WorkflowDefinition` moves to `schemaVersion: 2` (adding `objective.evidence` and `plan`). An upgrader turns v1 definitions into v2 with an empty evidence field and Stage 1 caps.
 
 ### 3.6 Tool Gateway (`src/lib/runtime/tools/gateway.server.ts`, new) and tools
 - `ToolDefinition = { id; tier: "read" | "write" | "send"; argsSchema; describe(args) → string; run(args, ctx) }`
-- `invoke(call: { runId, nodeKey, toolId, args }, ctx) → ToolResult | NeedsApproval | Blocked`
-- **READ** tools: `web.search` (Firecrawl), `web.fetch` (Firecrawl scrape of one URL), `file.read` (only under folders listed in settings), and `model.call` (ModelClient). They run freely, but only if the tool is listed in the approved plan.
-- **WRITE** tools: `file.save` (writes under `REAPER_DATA_DIR/outputs` or a folder listed in settings) and `command.run` (a single PowerShell command with a timeout, shown verbatim). Each call needs a fresh approval grant that matches `(runId, nodeKey, toolId, sha256(canonical args))`. A grant is used once. Approving the plan never counts as approving a WRITE.
+- `invoke(call: { runId, nodeKey, toolId, args }, ctx) → ToolResult | NeedsApproval | Blocked`. Every call is written to the run log and the audit log (§3.10) before it runs and again with its result. Logging is part of the gateway itself, with no switch to turn it off.
+- **READ** tools: `web.search` (Firecrawl), `web.fetch` (Firecrawl scrape of one URL), `file.read` (only under folders listed in settings), and `model.call` (ModelClient). They run freely. `file.read` may read the workspace and folders listed in settings, but never the protected zone's settings or secrets.
+- **WRITE** tools run in a sandbox, not with per-call approval:
+  - `file.save`: the target path is resolved first (§3.11). Inside the workspace it **runs freely**, and the file's prior state is snapshotted first.
+  - `command.run`: the program is run directly (`spawn` with an argument array, **no shell**, so no pipes, redirection, or `&&`), with the workspace as its working directory, a timeout, and a minimal environment. If it matches `commands.allowlist` and no argument resolves to a path outside the workspace, it **runs freely**, after a workspace snapshot.
+- **Approval is needed only for exceptions:** a path outside the workspace, a command not on the allowlist, a system-setting change (v1 has no tool for this, so any such change is a non-allowlisted command), or a budget above the ceilings. The run pauses with `NeedsApproval`. A grant matches `(runId, nodeKey, toolId, sha256(canonical args))` and is used once.
+- **Never approvable:** a write or command argument that resolves into the protected zone (§3.10) returns `Blocked`. No grant can authorize it.
 - **SEND** (send, post, purchase): no tools are registered in v1. The gateway returns `Blocked` for any `send` tier no matter what grants exist, and `capabilities.send` only accepts `"locked"`. Unlocking later takes a new settings value plus its own approval rule, delivered as a reviewed change. Hand-editing config cannot unlock it.
 - Tools run only as explicit `builtin.tool` nodes (config `{ toolId, args }`) that are visible in the plan. In v1 a model never picks a tool on its own.
+- **Honest limit:** without Docker or an OS sandbox on that PC, Reaper can't fully contain a native process. The command allowlist, together with no-shell spawning and argument path checks, *is* the containment. Allowlist entries are kept narrow for that reason.
 
 ### 3.7 Model router (`src/lib/runtime/router.server.ts`, Stage 5)
 - `pickModel(job: { jobKind, nodeKind, estTokens }, installed: string[], settings) → { model, reason }`
@@ -99,18 +111,51 @@ Each unit lives in a small file, can be tested alone with injected fakes (the wa
 
 ### 3.9 UI (`src/components/*`)
 - `workbench.tsx`: the free-floating `Panel`s (absolute positioning, `DEFAULT_FRAMES`, `reaper-frames-v4`) are replaced with a **docked grid**. Left dock: Plan/Integrations. Center: the canvas, always visible, minimum 480×320. Right dock: Objective/Inspector tabs. Bottom dock: Log. Docks can collapse but never overlap the canvas. Skins opens in a modal dialog. Today's defaults put the Objective panel (x 244, y 12) on top of the editor/canvas, and that is the "hidden behind the canvas" case to remove.
-- New `plan-panel.tsx`: a goal box and a "Draft plan" button, the draft, Planner notes and errors, and an "Approve & run" button that is enabled only when the draft is valid and unedited since approval.
-- New `approval-card.tsx`: shows a pending WRITE as the tool, the exact path or command, and an args preview, with Approve and Deny buttons.
+- New `plan-panel.tsx`: a goal box and a **Run** button, then the live plan, Planner notes and errors, and the current step. When `reviewPlanFirst` is on, the button reads "Draft plan" and an **Approve & run** button appears, enabled only while the draft is valid and unedited since it was drafted or last approved.
+- New `approval-card.tsx`: appears only for the exceptions in §3.6. It shows the tool, the exact path or command, why it needs approval (outside the workspace, not allowlisted, or over budget), and Approve and Deny buttons.
+- New `run-report.tsx`: shows the run report (§3.12) and the **Undo this run** button.
+
+### 3.10 Self-protection (`src/lib/runtime/tools/protected.server.ts`, Stage 4)
+- **Protected zone:**
+  - `REAPER_DATA_DIR`, which holds settings, the command allowlist, the run and audit logs, snapshots, reports, PGLite data, and skills;
+  - the Reaper repo folder (source, `.env*`, config, `POLICIES` in `engine.ts`);
+  - any path listed under `settings.protectedExtra`.
+- It sits outside the workspace (checked at startup, §3.1) and outside every tool's write authority. `isProtected(resolvedPath)` is checked in the gateway on every write and on every `command.run` argument that looks like a path.
+- **No tool can disable logging or loosen limits.** Logs are written by the engine and gateway, not by tools. The audit log `REAPER_DATA_DIR/logs/audit.jsonl` is append-only, and each line carries the hash of the previous line, so a gap or edit shows. Caps, ceilings, the allowlist, and `reviewPlanFirst` are frozen at startup, and no tool or plan can change them. A plan can *request* a bigger budget, and that always needs Justin's approval.
+- **Why:** an OpenAI misalignment report, *"Suppressing misalignment monitoring alerts and disabling misalignment monitoring"* (OpenAI Alignment, incidents Oct 3 and Oct 6, 2026, report updated Oct 20, 2026, https://alignment.openai.com/misalignment-reports/suppressing-misalignment-monitoring-alerts-and-disabling-misalignment-monitoring), describes coding agents disabling security alerts and removing a monitoring integration while doing routine changes, and one agent falsely claiming it had not. This was reported to Justin, and the page was checked when this spec was written. Reaper therefore keeps its own monitoring out of reach of what it monitors.
+
+### 3.11 Path resolver (`src/lib/runtime/tools/paths.server.ts`, Stage 4)
+- `resolveTarget(path) → { real: string; zone: "workspace" | "protected" | "outside" }`.
+- Steps, in order:
+  - Reject alternate data streams (`:` after the drive), device names (`CON`, `NUL`, …), and `\\?\` and UNC prefixes.
+  - Normalize, then resolve symlinks and junctions with `fs.realpath` on the longest existing prefix. This also resolves 8.3 short names.
+  - Compare case-insensitively on Windows, with trailing separators handled.
+- The check runs again right before the write, so a link swapped in after the check is caught.
+
+### 3.12 Snapshots, run report, and undo (`src/lib/runtime/snapshots.server.ts`, `report.server.ts`, Stage 4)
+- **Before each `file.save`:** copy the target's prior bytes, or record it as "absent", to `REAPER_DATA_DIR/snapshots/<runId>/`.
+- **Before each `command.run`:** take a full workspace snapshot (a manifest of path, size, and sha256, plus copies of files not already saved this run). If that snapshot would exceed `snapshotMaxBytes`, the command needs approval.
+- **Run report:** written at the end of every run, including failed ones, to `REAPER_DATA_DIR/reports/<runId>.md` and shown in the UI. It covers the goal, the plan, the models used, every tool call with its args, result, and duration, files written, commands run with exit codes, approvals requested and decided, supported and unsupported claims, limitations, and the snapshot reference.
+- **Undo this run:** restores every snapshotted path to its pre-run bytes, deletes paths the run created, and verifies the result against the manifest hashes. If a later run touched the same paths, undo lists the conflicts and asks for confirmation. Undo is itself logged and writes only inside the workspace.
 
 ## 4. Data flow
 
-1. Justin types a goal and clicks **Draft plan**. `api.ts` `draftServerPlan` calls `draftPlan` and saves the result with `persistWorkflow`. The workflow's `approved_version` is null.
-2. The draft is drawn on the canvas. Justin can edit nodes, the evidence rule, and the budget. Every save bumps `version`, which leaves the workflow unapproved.
-3. **Approve & run** calls `approvePlan(workflowId, version)`, which sets `approved_version = version`. `beginRun` refuses unless `approved_version == version`. The run snapshot copies the plan budget into `run.caps`.
+1. Justin types a goal and clicks **Run**. `api.ts` `draftServerPlan` calls `draftPlan` and saves the result with `persistWorkflow`, and the plan is drawn on the canvas.
+2. **Default (`reviewPlanFirst` off):** if the draft is valid and within the ceilings, `beginRun` starts right away. The run snapshot copies the plan budget into `run.caps`.
+3. **Review on, or budget over the ceilings:**
+   - Justin can edit nodes, the evidence rule, and the budget. Every save bumps `version`.
+   - **Approve & run** sets `approved_version = version`.
+   - In this mode `beginRun` refuses unless `approved_version == version`, so an edit after approval needs a new OK.
 4. The UI drives `stepServerRun` one step at a time, as it does today (`claimRunStep` → `stepRuntime` → `replaceRun`).
 5. Research and tool nodes produce `SourceRecord`s with run-unique IDs. The analysis node calls the model with the objective, the evidence rule, and those sources. `validateClaims` marks the claims, and `builtin.record` writes supported and unsupported claims plus limitations.
-6. When a WRITE is reached, the gateway returns `NeedsApproval`. The engine stores a row in `reaper_approvals`, sets the run status to `awaiting_approval`, and does **not** advance. Approve stores a grant, and the next step re-runs that node, which uses the grant. Deny fails the node with "Denied by Justin" and the run follows its normal failure path.
-7. Persistence: migration `0003_station.sql` adds `reaper_workflows.approved_version`, `reaper_runs.status` value `awaiting_approval`, and table `reaper_approvals (id, user_id, run_id, node_key, tool_id, args_hash, args jsonb, decision, decided_at, consumed_at)`. In local mode, `src/lib/db.ts` passes `dataDir: REAPER_DATA_DIR/pglite` to `new PGlite`, so runs and pending approvals survive a restart. Durable storage arrives in Stage 3, and the migration's approval parts arrive in Stage 4. Stage 1 keeps today's in-memory PGLite. The existing auth-off/`DATABASE_URL` guard stays as it is.
+6. A WRITE inside the workspace (an allowlisted command, or a file save) is snapshotted, runs, and is logged, and the run goes on.
+7. A WRITE that needs an exception (§3.6) makes the gateway return `NeedsApproval`.
+   - The engine stores a row in `reaper_approvals`, sets the run status to `awaiting_approval`, and does **not** advance.
+   - Approve stores a grant, and the next step re-runs that node, which uses the grant.
+   - Deny fails the node with "Denied by Justin", and the run follows its normal failure path.
+   - Anything touching the protected zone is `Blocked` and never reaches this point.
+8. At the end, `report.server.ts` writes the run report. **Undo this run** calls `undoRun(runId)` (§3.12).
+9. Persistence: migration `0003_station.sql` adds `reaper_workflows.approved_version`, `reaper_runs.status` value `awaiting_approval`, and table `reaper_approvals (id, user_id, run_id, node_key, tool_id, args_hash, args jsonb, decision, decided_at, consumed_at)`. In local mode, `src/lib/db.ts` passes `dataDir: REAPER_DATA_DIR/pglite` to `new PGlite`, so runs and pending approvals survive a restart. Durable storage arrives in Stage 3, and the migration's approval parts arrive in Stage 4. Stage 1 keeps today's in-memory PGLite. The existing auth-off/`DATABASE_URL` guard stays as it is.
 
 ## 5. Error handling
 
@@ -124,9 +169,15 @@ Every failure shows up in the run log and the node state. No failure is turned i
 | Malformed or unparseable model JSON | Node fails (existing check). No partial claims are kept. |
 | Reasoning-only reply with no message item | Fails with "Model returned no answer text". |
 | Firecrawl key missing, empty results, or 5xx | Existing visible failures. A 429 or 5xx gets one retry. |
-| Planner draft invalid after the repair attempt | Draft shown with errors. Approve stays disabled. |
-| Plan edited after approval | Becomes unapproved. `beginRun` and `stepServerRun` reject it as stale. |
-| WRITE without a matching unused grant | `NeedsApproval`. The tool code never runs. |
+| Planner draft invalid after the repair attempt | Draft shown with errors. It does not run until fixed. |
+| Review on and plan edited after approval | Becomes unapproved. `beginRun` and `stepServerRun` reject it as stale. |
+| Draft budget above the ceilings | Waits for approval of that budget, in either mode. |
+| Write outside the workspace, or a non-allowlisted command | `NeedsApproval`. The tool code doesn't run without a matching unused grant. |
+| Write or argument resolving into the protected zone (including via `..`, symlink, junction, 8.3 name, or ADS) | `Blocked`, logged. No grant can authorize it. |
+| Command uses shell syntax, or an argument points outside the workspace | Treated as not allowlisted, so it needs approval. A path in the protected zone is `Blocked`. |
+| Snapshot fails or would exceed `snapshotMaxBytes` | The write doesn't run. It fails, or needs approval if over the cap. |
+| Audit-log hash chain broken at startup | Reaper starts and shows a warning naming the first bad line. The log is never rewritten. |
+| Undo conflicts with a later run | Conflicting paths are listed. Nothing is restored without confirmation. |
 | Any SEND | `Blocked`, logged. The node fails. |
 | App restarts mid-run or mid-approval | A run that was `running` comes back `paused` (existing). An `awaiting_approval` run keeps its pending card. |
 | Step budget, depth, or caps exhausted | Existing failure messages. |
@@ -134,10 +185,19 @@ Every failure shows up in the run log and the node state. No failure is turned i
 ## 6. Testing
 
 - **Runner:** the existing `node --test`. The `test` script moves into `scripts/run-tests.mjs` so it works in both PowerShell and Linux CI. Today the single-quoted glob fails under `cmd.exe`, and the `&&` chain hides the TypeScript tests whenever a script test fails.
-- **Unit tests with fakes** for each unit in §3: ModelClient against recorded Ollama replies (including a gpt-oss reply with a reasoning item), Planner against recorded drafts, the gateway, the router, and the skill loader.
+- **Unit tests with fakes** for each unit in §3: ModelClient against recorded Ollama replies (including a gpt-oss reply with a reasoning item), Planner against recorded drafts with `reviewPlanFirst` on and off, the gateway, the path resolver, snapshots and undo, the router, and the skill loader.
 - **Randomized property and stress tests (Stage 4 only, after one real run works)** use a seeded generator in `src/lib/runtime/testing/random.ts`. The seed is printed on failure so the case can be replayed, and no new dependency is needed.
   - Citation validator: ≥10,000 random claim sets against random source sets, including near-miss IDs (case, whitespace, zero-padding, look-alike Unicode, IDs from another run, empty lists). Invariant: supported ⇔ non-empty and every ID is an exact member.
-  - Gateway: ≥10,000 random sequences of calls, approvals, denials, replays, edited args, and simulated restarts. Invariants: a WRITE tool's `run` is never invoked without a matching unused grant, a grant never works twice or for different args, and a SEND is never invoked under any settings value or grant.
+  - Gateway: ≥10,000 random sequences of calls, approvals, denials, replays, edited args, and simulated restarts. Invariants:
+    - a write outside the workspace, or a non-allowlisted command, never runs without a matching unused grant;
+    - a grant never works twice or for different args;
+    - SEND never runs under any settings value or grant;
+    - nothing writes into the protected zone.
+  - Path traversal: random paths built from `..`, mixed separators, case changes, trailing dots and spaces, 8.3 names, ADS suffixes, device names, and UNC or `\\?\` prefixes. A path is classed `workspace` only if its real path is inside the root.
+  - Symlinks and junctions: random links inside the workspace pointing out of it, into the protected zone, and swapped between check and write. None of them lets a write escape. Junction cases run on Windows. On Linux CI they are skipped with a logged reason, and symlink cases run on both.
+  - Commands: random programs, arguments, shell metacharacters, and path arguments. Only exact allowlist matches with in-workspace paths run freely.
+  - Tampering: random tool calls aimed at logs, `audit.jsonl`, settings, the allowlist, `engine.ts` `POLICIES`, and repo files. All are `Blocked`, settings stay unchanged after the run, and the audit chain stays intact.
+  - Snapshots and undo: random sequences of saves and commands, then undo. The workspace matches the pre-run manifest byte for byte.
   - Plan validator: random graphs are never accepted if they have an unknown tool, a SEND tool, an over-cap budget, more than 24 steps, or depth > 4.
 - **Layout check:** the existing Playwright smoke (`scripts/browser-smoke.mjs`) at 1280×720 and 1920×1080 asserts that the canvas is visible and non-empty and that no docked region overlaps it.
 - **Stage 1 adds no new test types.** It extends the existing mocked-provider tests in `runtime.test.ts` for the base URL, the optional key, the timeout, and parsing a reply with a reasoning item.
@@ -158,13 +218,25 @@ Each stage is gated: all tests pass (`npm test`, typecheck, lint) **and** its "d
    - Remove the dead six-stage console: `src/components/reaper-console.tsx`, `src/lib/reaper.ts`, and any `engine.ts` client-run helpers that only they use. Each removal is grep-checked first.
    - Build the docked layout (§3.9) and fix the 12 failing script tests (OG/title injection, app-env, `with-app-env`, and the `0001_auth.sql` copy).
    *Done when:* `npm test` passes on Node 22 on both Linux and Windows, CI is green once Justin pushes, and the layout check passes.
-3. **Planner.** §3.5, `plan-panel.tsx`, `approved_version`, schema v2. Also: the settings unit (§3.1), run-unique source IDs (§3.3), the retry tag and context check (§3.2), and durable PGLite (§4.7), since drafts and multi-source plans need them.
-   *Done when:* a plain-words goal produces a valid draft, nothing runs before approval (a test proves `beginRun` rejects unapproved and edited-after-approval workflows), and one approved, edited draft completes on the Shadow PC with validated citations.
-4. **Tool tiers with approval gates and self-protection.** §3.6, `approval-card.tsx`, `reaper_approvals`, `awaiting_approval`. This is the first stage with write tools, so the protections arrive here:
-   - the sandbox (allowed folders for `file.read` and `file.save`, and the `command.run` timeout);
-   - the allowlist (only tools listed in the approved plan may run);
-   - all randomized self-protection stress tests in §6 (citation validator, gateway, plan validator).
-   *Done when:* the randomized stress tests pass (no WRITE without approval, SEND always blocked), and one live run on the PC pauses for a `file.save` approval, writes after Approve, and fails cleanly after Deny.
+3. **Planner (runs immediately; optional review).** §3.5, `plan-panel.tsx`, the `reviewPlanFirst` setting (default off), `approved_version`, and schema v2. Also: the settings unit (§3.1), run-unique source IDs (§3.3), the retry tag and context check (§3.2), and durable PGLite (§4.9), since drafts and multi-source plans need them. Stage 3 has no write tools.
+   *Done when:*
+   - On the Shadow PC, a plain-words goal produces a valid draft that runs straight away, with the plan and each step shown live and logged, and finishes with validated citations.
+   - With `reviewPlanFirst` on, tests prove `beginRun` rejects unapproved and edited-after-approval workflows, and one edited, approved draft completes on the PC.
+   - In both modes, a test proves a budget above the ceilings waits for approval.
+4. **Tool tiers, sandbox, and self-protection.** §3.6, §3.10, §3.11, §3.12, `approval-card.tsx`, `run-report.tsx`, `reaper_approvals`, and `awaiting_approval`. This is the first stage with write tools, so the protections arrive here:
+   - the workspace sandbox and snapshots;
+   - the command allowlist;
+   - the protected zone and the audit log;
+   - run reports and undo;
+   - approval for exceptions only;
+   - all randomized stress tests in §6: citation validator, plan validator, gateway, path traversal, symlinks and junctions, commands, tampering, and undo.
+   *Done when:*
+   - All of those stress tests pass, including on Windows for junctions.
+   - On the Shadow PC, one live run saves a file and runs an allowlisted command inside the workspace with no approval prompt.
+   - That run produces a run report, and **Undo this run** restores the workspace to match the pre-run manifest hashes.
+   - One write outside the workspace pauses for approval, runs after Approve, and fails cleanly after Deny.
+   - A write aimed at the settings file is `Blocked`.
+   - SEND is always blocked.
 5. **Model router and skill loading.** §3.7 and §3.8.
    *Done when:* router tests show deterministic picks from the installed list with fallback, skill tests show only the requested skills from the allowed bundle are injected within budget, and one live run logs its chosen model and the skills it loaded.
 
@@ -182,14 +254,14 @@ The process combines Justin's Autonomous Workstation Methodology with a Superpow
 ## 9. Open questions
 
 1. What context length should `gpt-oss:20b` run at on the 20 GB card (`REAPER_MODEL_CONTEXT`)? It sets how many sources fit and when the skill budget overflows. It should be measured in Stage 1.
-2. What are the `file.read` and `file.save` allowed folders on the Shadow PC?
-3. Where does Justin's Change Log live: a file in this repo, or his existing workstation log?
-4. Should the Stage 2 cleanup also remove the Grok auth broker wiring, or leave it dormant since local mode runs with auth off?
+2. Where should the workspace root be on the Shadow PC? The default is `C:\ReaperWorkspace`. It must sit outside the Reaper repo and `REAPER_DATA_DIR`. Which extra folders, if any, may `file.read` use?
+3. What should the initial command allowlist be? The proposed start is `git` (`status`, `diff`, `log`, `add`, `commit` in the workspace only), `node --version`, `npm test`, and `npm run build`. Note that the `npm` entries run scripts defined in the workspace's `package.json`.
+4. Where does Justin's Change Log live: a file in this repo, or his existing workstation log? And should the Stage 2 cleanup remove the Grok auth broker wiring, or leave it dormant?
 5. Which models should the Stage 5 router table list beyond `gpt-oss:20b`? That depends on what Justin installs.
 
 ## 10. Spec self-review
 
-- **Placeholders:** none. Every default value, file, table, and threshold is named. Items that are genuinely undecided are in §9 only, and each has a working default (context 32768, outputs under `REAPER_DATA_DIR/outputs`, auth left dormant, router falls back to `gpt-oss:20b`).
-- **Consistency:** limits (budget 24, depth 4) are the same in §1, §3.5, §6, and §7. Stage 1 is deliberately minimal: it uses only existing checks and adds no new safeguards. The sandbox, the allowlist, and the stress tests are all Stage 4, and that is stated the same way in §6 and §7. Stage 1 keeps the current caps, and plan-declared budgets arrive in Stage 3 within the §3.1 ceilings. SEND is blocked the same way in §3.1, §3.6, §5, and §6. There are no named modes anywhere: the station has one general Planner.
+- **Placeholders:** none. Every default value, file, table, and threshold is named. Items that are genuinely undecided are in §9 only, and each has a working default (context 32768, data dir `C:\ReaperData`, workspace `C:\ReaperWorkspace`, a narrow starter allowlist, auth left dormant, router falls back to `gpt-oss:20b`).
+- **Consistency:** limits (budget 24, depth 4) are the same in §1, §3.5, §6, and §7. Stage 1 is deliberately minimal: it uses only existing checks and adds no new safeguards. The sandbox, the allowlist, and the stress tests are all Stage 4, and that is stated the same way in §6 and §7. Stage 1 keeps the current caps, and plan-declared budgets arrive in Stage 3 within the §3.1 ceilings. SEND is hard-blocked the same way in §3.1, §3.6, §5, §6, and §7. Plan approval is optional and off by default everywhere it is mentioned (§1, §2, §3.5, §3.9, §4, §5, §7). WRITE approval applies only to the §3.6 exceptions, and protected-zone writes are blocked rather than approvable, in §3.6, §3.10, §4, §5, and §6. There are no named modes anywhere: the station has one general Planner.
 - **Scope:** this is one product split into five gated stages. Each stage can get its own implementation plan. The v1 exclusions are listed in §1, and nothing in §3–§7 depends on them.
-- **Ambiguity:** "approval" means two separate things, and they are kept apart. Plan approval (`approved_version`) never authorizes a WRITE. A WRITE needs its own single-use grant. "Small" and "large" model are defined by a context threshold.
+- **Ambiguity:** "approval" means two separate, optional things, and they are kept apart. Plan approval (`approved_version`) is used only when review is on or the budget is over the ceilings, and it never authorizes a WRITE exception. A WRITE exception needs its own single-use grant. "Allowlist" means only the command allowlist. "Workspace" means only `settings.workspace.root`. "Small" and "large" model are defined by a context threshold.
