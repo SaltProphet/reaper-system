@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Agent } from "undici";
 import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
@@ -10,6 +12,7 @@ import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./ste
 import { classifyModelError, createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText, SOURCE_CONTENT_CAP } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 import { ProviderError } from "./errors.ts";
+import { runFilePath, writeRunFile } from "./run-file.server.ts";
 
 const source = {
   id: "SRC-001",
@@ -431,4 +434,24 @@ test("caps each Firecrawl source at 7,000 characters", async () => {
   } finally {
     globalThis.fetch = oldFetch;
   }
+});
+
+test("writes the finished run to <dataDir>/runs/<runId>.json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reaper-runs-"));
+  try {
+    const run = await runToEnd(workflow(defaultState().graphs[0]));
+    const path = await writeRunFile(run, dir);
+    assert.equal(path, join(dir, "runs", `${run.id}.json`));
+    const saved = JSON.parse(readFileSync(path!, "utf8"));
+    assert.equal(saved.run.status, "done");
+    assert.equal(saved.run.log.length, run.log.length);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writes nothing without a data dir and refuses odd run ids", async () => {
+  const run = await runToEnd(workflow(defaultState().graphs[0]));
+  await withEnv({ REAPER_DATA_DIR: undefined }, async () => assert.equal(await writeRunFile(run), null));
+  assert.throws(() => runFilePath("C:\\ReaperData", "..\\..\\evil"), /unexpected run id/);
 });

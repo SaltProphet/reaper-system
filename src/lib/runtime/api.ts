@@ -64,7 +64,17 @@ export const stepServerRun = createServerFn({ method: "POST" })
     if (owned.run.status === "done" || owned.run.status === "failed") return owned.run;
     const claimed = await claimRunStep(context.userId, data.expectedVersion, owned.run);
     const next = await stepRuntime(owned.workflow, claimed, createProviderDependencies());
-    return replaceRun(context.userId, claimed.version, next);
+    const saved = await replaceRun(context.userId, claimed.version, next);
+    if (saved.status === "done" || saved.status === "failed") {
+      try {
+        const { writeRunFile } = await import("./run-file.server");
+        const path = await writeRunFile(saved);
+        if (path) console.info(`[reaper] run file written: ${path}`);
+      } catch (error) {
+        console.error("[reaper] run file not written:", error);
+      }
+    }
+    return saved;
   });
 
 export const changeRunStatus = createServerFn({ method: "POST" })
