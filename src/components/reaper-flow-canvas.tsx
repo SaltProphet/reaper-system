@@ -16,8 +16,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo } from "react";
-import type { Graph, NodeDef } from "@/lib/engine";
-import { IMPLS } from "@/lib/engine";
+import type { Graph, NodeDef, Run } from "@/lib/engine";
+import { IMPLS, orderedNodes } from "@/lib/engine";
 
 type Status = "waiting" | "running" | "done" | "failed";
 
@@ -108,9 +108,22 @@ function ReaperNode({ data, selected }: { data: ReaperNodeData; selected: boolea
 
 const nodeTypes = { reaper: ReaperNode };
 
-function statusOf(node: NodeDef, hotId: string | null, runStatus?: string): Status {
-  if (hotId === node.id) return runStatus === "failed" ? "failed" : "running";
-  // Map from run artifacts / engine state in real integration
+// Status of one node in this graph, read from the active run.
+// running: the run's stack currently points at this node (including a parent
+//          node whose child graph is executing).
+// failed:  the run failed while pointing at this node.
+// done:    the run produced an artifact for this node in this graph.
+// waiting: everything else, including no run at all.
+function statusOf(node: NodeDef, graph: Graph, order: NodeDef[] | null, run: Run | null | undefined): Status {
+  if (!run) return "waiting";
+  const isCurrent =
+    !!order && run.stack.some((frame) => frame.graphId === graph.id && order[frame.index]?.id === node.id);
+  if (isCurrent) {
+    if (run.status === "failed") return "failed";
+    if (run.status === "running" || run.status === "paused") return "running";
+  }
+  const produced = run.artifacts.some((a) => a.graphId === graph.id && a.nodeId === node.id);
+  if (produced) return "done";
   return "waiting";
 }
 
@@ -123,6 +136,7 @@ export function ReaperFlowCanvas({
   graph,
   selectedId,
   hotId,
+  run,
   onSelect,
   onMove,
   onConnect,
@@ -131,11 +145,14 @@ export function ReaperFlowCanvas({
   graph: Graph;
   selectedId: string | null;
   hotId: string | null;
+  run?: Run | null;
   onSelect: (id: string) => void;
   onMove: (id: string, x: number, y: number) => void;
   onConnect: (fromId: string, toId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
+  const order = useMemo(() => orderedNodes(graph), [graph]);
+
   const initialNodes: Node<ReaperNodeData>[] = useMemo(
     () =>
       graph.nodes.map((n) => ({
@@ -146,12 +163,12 @@ export function ReaperFlowCanvas({
           label: n.name,
           kind: n.kind,
           summary: summaryOf(n),
-          status: statusOf(n, hotId),
+          status: statusOf(n, graph, order, run),
           icon: n.implId.split(".").pop() || "objective",
         },
         selected: n.id === selectedId,
       })),
-    [graph.nodes, selectedId, hotId],
+    [graph, order, run, selectedId],
   );
 
   const initialEdges: Edge[] = useMemo(
