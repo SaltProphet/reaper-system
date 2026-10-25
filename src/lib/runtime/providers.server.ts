@@ -90,17 +90,22 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function responseOutputText(payload: JsonObject): string {
-  if (typeof payload.output_text === "string") return payload.output_text;
-  const output = Array.isArray(payload.output) ? payload.output : [];
-  for (const item of output) {
-    const content = Array.isArray(asRecord(item).content) ? asRecord(item).content as unknown[] : [];
-    for (const part of content) {
-      const object = asRecord(part);
-      if (typeof object.text === "string") return object.text;
+export function responseOutputText(payload: JsonObject): string {
+  if (Array.isArray(payload.output)) {
+    for (const item of payload.output) {
+      const record = asRecord(item);
+      if (record.type !== "message") continue;
+      const content = Array.isArray(record.content) ? record.content : [];
+      for (const part of content) {
+        const object = asRecord(part);
+        const isAnswer = object.type === undefined || object.type === "output_text";
+        if (isAnswer && typeof object.text === "string" && object.text.trim()) return object.text;
+      }
     }
+    throw new Error("Model returned no answer text.");
   }
-  throw new Error("Model returned no structured analysis text.");
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
+  throw new Error("Model returned no answer text.");
 }
 
 export function createProviderDependencies(): RuntimeDependencies {

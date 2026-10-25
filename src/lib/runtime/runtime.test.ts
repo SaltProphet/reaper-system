@@ -4,7 +4,7 @@ import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
 import { EXECUTORS, getExecutor } from "./registry.ts";
 import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./step.ts";
-import { createProviderDependencies, modelConfig, REAPER_ANALYSIS_SCHEMA } from "./providers.server.ts";
+import { createProviderDependencies, modelConfig, REAPER_ANALYSIS_SCHEMA, responseOutputText } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 
 const source = {
@@ -322,4 +322,34 @@ test("analysis posts to the configured base URL without an Authorization header 
 test("the code schema is exactly the schema in the recorded fixture request", () => {
   const request = JSON.parse(readFileSync(new URL("./fixtures/ollama-responses-request.json", import.meta.url), "utf8"));
   assert.deepEqual(request.text.format.schema, REAPER_ANALYSIS_SCHEMA);
+});
+
+test("reads only message items, never reasoning text", () => {
+  const payload = {
+    output_text: "reasoning leaked here",
+    output: [
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "thinking..." }] },
+      { type: "message", content: [{ type: "output_text", text: "{\"summary\":\"answer\"}" }] },
+    ],
+  };
+  assert.equal(responseOutputText(payload), "{\"summary\":\"answer\"}");
+});
+
+test("uses output_text only when there is no output array", () => {
+  assert.equal(responseOutputText({ output_text: "x" }), "x");
+});
+
+test("a reasoning-only reply fails with no answer text", () => {
+  assert.throws(
+    () => responseOutputText({ output: [{ type: "reasoning", content: [{ type: "reasoning_text", text: "t" }] }] }),
+    /Model returned no answer text/,
+  );
+});
+
+test("parses the recorded Ollama reply into a schema-valid analysis", () => {
+  const reply = JSON.parse(readFileSync(new URL("./fixtures/ollama-responses-reaper-analysis.json", import.meta.url), "utf8"));
+  const parsed = JSON.parse(responseOutputText(reply));
+  assert.equal(typeof parsed.summary, "string");
+  assert.ok(Array.isArray(parsed.claims) && Array.isArray(parsed.limitations));
+  for (const claim of parsed.claims) for (const id of claim.sourceIds) assert.match(id, /^SRC-00[12]$/);
 });
