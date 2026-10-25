@@ -1,3 +1,4 @@
+import { Agent } from "undici";
 import { env } from "../env.server.ts";
 import type { RuntimeDependencies, SourceRecord } from "./types.ts";
 
@@ -24,6 +25,20 @@ export const REAPER_ANALYSIS_SCHEMA = {
     limitations: { type: "array", items: { type: "string" } },
   },
 };
+
+export function modelAgentOptions(timeoutMs: number) {
+  return { headersTimeout: timeoutMs, bodyTimeout: timeoutMs };
+}
+
+const modelAgents = new Map<number, Agent>();
+function modelAgent(timeoutMs: number): Agent {
+  let agent = modelAgents.get(timeoutMs);
+  if (!agent) {
+    agent = new Agent(modelAgentOptions(timeoutMs));
+    modelAgents.set(timeoutMs, agent);
+  }
+  return agent;
+}
 
 export type ModelConfig = { baseUrl: string; apiKey?: string; model: string; timeoutMs: number };
 
@@ -151,7 +166,7 @@ export function createProviderDependencies(): RuntimeDependencies {
         instructions: ANALYSIS_INSTRUCTIONS,
         input: JSON.stringify({ objective, sources }),
         text: { format: { type: "json_schema", name: "reaper_analysis", strict: true, schema: REAPER_ANALYSIS_SCHEMA } },
-      }, { apiKey: config.apiKey, timeoutMs: config.timeoutMs });
+      }, { apiKey: config.apiKey, timeoutMs: config.timeoutMs, dispatcher: modelAgent(config.timeoutMs) });
       const parsed = JSON.parse(responseOutputText(payload)) as ProviderAnalysis;
       const claimsValid = Array.isArray(parsed?.claims) && parsed.claims.every((claim) =>
         claim && typeof claim.text === "string" && Array.isArray(claim.sourceIds) && claim.sourceIds.every((id) => typeof id === "string"));

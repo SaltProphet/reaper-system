@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { Agent } from "undici";
 import test from "node:test";
 import { connectNodes, defaultState, orderedNodes, type Graph } from "../engine.ts";
 import { EXECUTORS, getExecutor } from "./registry.ts";
 import { createRuntimeRun, stepRuntime, validateWorkflowDefinition } from "./step.ts";
-import { createProviderDependencies, modelConfig, REAPER_ANALYSIS_SCHEMA, responseOutputText } from "./providers.server.ts";
+import { createProviderDependencies, modelAgentOptions, modelConfig, postJson, REAPER_ANALYSIS_SCHEMA, responseOutputText } from "./providers.server.ts";
 import type { RuntimeDependencies, WorkflowDefinition } from "./types.ts";
 
 const source = {
@@ -352,4 +355,36 @@ test("parses the recorded Ollama reply into a schema-valid analysis", () => {
   assert.equal(typeof parsed.summary, "string");
   assert.ok(Array.isArray(parsed.claims) && Array.isArray(parsed.limitations));
   for (const claim of parsed.claims) for (const id of claim.sourceIds) assert.match(id, /^SRC-00[12]$/);
+});
+
+test("model agent timeouts match the configured model timeout", () => {
+  assert.deepEqual(modelAgentOptions(600_000), { headersTimeout: 600_000, bodyTimeout: 600_000 });
+});
+
+async function slowServer(delayMs: number) {
+  const server = createServer((_req, res) => {
+    setTimeout(() => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{\"ok\":true}");
+    }, delayMs);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/` };
+}
+
+test("global fetch honors the undici dispatcher's headersTimeout", async () => {
+  const { server, url } = await slowServer(2_500); // undici timers have ~1 s resolution: keep the gap > 1 s
+  const short = new Agent({ headersTimeout: 200, bodyTimeout: 200 });
+  const long = new Agent({ headersTimeout: 5_000, bodyTimeout: 5_000 });
+  try {
+    await assert.rejects(
+      () => postJson(url, {}, { timeoutMs: 10_000, dispatcher: short }),
+      (error: any) => error?.cause?.code === "UND_ERR_HEADERS_TIMEOUT",
+    );
+    assert.deepEqual(await postJson(url, {}, { timeoutMs: 10_000, dispatcher: long }), { ok: true });
+  } finally {
+    await short.close();
+    await long.close();
+    server.close();
+  }
 });
