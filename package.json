@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "start:local": "node scripts/start-local.mjs",
+    "firecrawl:check": "node scripts/firecrawl-check.mjs",
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/preview-path-prefix.test.ts src/lib/runtime/runtime.test.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
