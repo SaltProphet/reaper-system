@@ -8,6 +8,7 @@ node_modules/
 !.env.example
 
 # Build and test output
+.vercel/output/
 .output/
 .vercel/
 dist/
