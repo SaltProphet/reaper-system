@@ -326,6 +326,7 @@ export function Workbench() {
           <Ctrl label={dirty ? "Save *" : "Save"} onClick={() => void onSave()} disabled={busy || !dirty} />
           <Ctrl label="Run" primary onClick={() => void onRun()} disabled={live || busy} />
           <Ctrl label="Step" onClick={() => void advanceRun(true)} disabled={live || busy} />
+          <Ctrl label="New run" onClick={() => { setState((current) => (current ? { ...current, activeRunId: null } : current)); setNotice("Cleared. Press Run or Step to start fresh."); }} disabled={live || busy} />
           <Ctrl label="Pause" onClick={() => void onStatus("paused")} disabled={!live || busy} />
           <Ctrl label="Resume" onClick={() => void onStatus("running")} disabled={run?.status !== "paused" || busy} />
           <UserButton />
